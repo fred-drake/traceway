@@ -39,20 +39,21 @@ Traceway is an error tracking and monitoring platform consisting of:
 - **CLI**: Go 1.26, Cobra 1.10, separate Go module (`github.com/tracewayapp/traceway/cli`); flake.nix dev shell, justfile entrypoints
 - **Client SDK**: Go 1.25, Gin middleware support
 
-### go-lightning Library (PostgreSQL ORM)
-- **Import**: `github.com/tracewayapp/go-lightning/lit`
-- **Purpose**: Lightweight generic CRUD operations for PostgreSQL
+### lit Library (SQL mapper)
+- **Import**: `github.com/tracewayapp/lit/v2` (currently v2.0.5)
+- **Purpose**: Lightweight generic CRUD operations on top of `database/sql`. Supports PostgreSQL, MySQL, SQLite, and DuckDB drivers (`lit.PostgreSQL`, `lit.MySQL`, `lit.SQLite`, `lit.DuckDB`). Traceway registers models against `db.Driver` (SQLite or PostgreSQL depending on build tags); the DuckDB telemetry backend deliberately keeps `lit.SQLite` for reads since DuckDB accepts `?` placeholders.
+- **Docs for AI use**: the lit repo ships a skill at `skills/lit/SKILL.md` plus `llms.txt` with the full API contract and pitfall checklist.
 
 #### Model Registration (required before use)
-All models are registered centrally in `models/models.go` via `models.Init()`:
+All models are registered centrally in `models/models.go` via `models.Init(driver lit.Driver)`, called at boot with `db.Driver`:
 ```go
-func Init() {
-    lit.RegisterModel[User](lit.PostgreSQL)
-    lit.RegisterModel[Project](lit.PostgreSQL)
+func Init(driver lit.Driver) {
+    lit.RegisterModel[User](driver)
+    lit.RegisterModel[Project](driver)
     // ...all models registered here
 }
 ```
-Repository-local result models (e.g., aggregate structs only used in one repo) can use file-level `init()` instead.
+Repository-local result models (e.g., aggregate structs only used in one repo) can use file-level `init()` instead. Irregular table names use `lit.RegisterModelWithNaming` with a struct embedding `lit.DefaultDbNamingStrategy` (see `escalationPolicyNaming` in `models.go`).
 
 #### Naming Conventions
 - Fields: CamelCase → snake_case (`FirstName` → `first_name`)
@@ -61,7 +62,7 @@ Repository-local result models (e.g., aggregate structs only used in one repo) c
 - Override via struct tag: `lit:"custom_name"`
 
 #### Core CRUD Operations
-All lit functions take `*sql.Tx` as the first argument for transactional consistency:
+All lit functions take a `lit.Executor` as the first argument. Both `*sql.Tx` and `*sql.DB` qualify: main-DB repositories pass the `*sql.Tx` from the transaction middleware, telemetry repositories pass `db.TelemetryDB` directly.
 
 | Function | Description |
 |----------|-------------|
@@ -72,7 +73,10 @@ All lit functions take `*sql.Tx` as the first argument for transactional consist
 | `lit.SelectSingle[T](tx, query, args...)` | Retrieve one record (returns `*T`) |
 | `lit.Update[T](tx, &entity, "id = $1", id)` | Update (auto-prepends WHERE) |
 | `lit.UpdateNative(tx, "UPDATE table SET col = $1 WHERE ...", args...)` | Raw SQL update for partial/single-field changes |
-| `lit.Delete(tx, "DELETE FROM table WHERE id = $1", id)` | Delete records |
+| `lit.Delete(tx, "DELETE FROM table WHERE id = $1", id)` | Delete records (any exec statement) |
+| `lit.SelectNamed[T]` / `lit.SelectSingleNamed[T]` / `lit.UpdateNamed[T]` | `:name` placeholder variants taking a `lit.P{...}` map; render per-driver, used for dialect-neutral queries |
+| `lit.DeleteNamed(driver, tx, query, lit.P{...})` | Named delete/exec. Gotcha: takes the driver as the FIRST argument |
+| `lit.ParseNamedQuery(driver, query, lit.P{...})` | Renders `:name` to positional; escape hatch for `QueryContext`/`RowsAffected` via `database/sql` |
 
 #### Transaction Helper (`pgdb.ExecuteTransaction`)
 All PostgreSQL operations should use `ExecuteTransaction` for automatic commit/rollback:

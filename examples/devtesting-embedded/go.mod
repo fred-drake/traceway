@@ -109,7 +109,7 @@ require (
 	github.com/shopspring/decimal v1.4.0 // indirect
 	github.com/tklauser/go-sysconf v0.4.0 // indirect
 	github.com/tklauser/numcpus v0.12.0 // indirect
-	github.com/tracewayapp/lit/v2 v2.0.2 // indirect
+	github.com/tracewayapp/lit/v2 v2.0.5 // indirect
 	github.com/tracewayapp/traceway/cli v1.9.15 // indirect
 	github.com/twitchyliquid64/golang-asm v0.15.1 // indirect
 	github.com/ugorji/go/codec v1.3.1 // indirect

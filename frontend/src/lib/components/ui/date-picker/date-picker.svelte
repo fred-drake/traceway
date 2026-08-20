@@ -1,12 +1,12 @@
 <script lang="ts">
 	import * as Popover from '$lib/components/ui/popover';
-	import DateTimeCalendar from './datetime-calendar.svelte';
+	import { Calendar } from '$lib/components/ui/calendar';
 	import { cn } from '$lib/utils';
 	import { Calendar as CalendarIcon } from '@lucide/svelte';
-	import { CalendarDateTime, getLocalTimeZone, parseDateTime } from '@internationalized/date';
+	import { getLocalTimeZone, parseDate, type DateValue } from '@internationalized/date';
 
 	interface Props {
-		// Same wire format as <input type="datetime-local">: yyyy-MM-ddTHH:mm
+		// Same wire format as <input type="date">: yyyy-MM-dd
 		value?: string;
 		onValueChange?: (value: string) => void;
 		disabled?: boolean;
@@ -21,7 +21,7 @@
 		disabled = false,
 		id,
 		class: className,
-		placeholder = 'Pick a date & time'
+		placeholder = 'Pick a date'
 	}: Props = $props();
 
 	let open = $state(false);
@@ -29,7 +29,7 @@
 	const parsed = $derived.by(() => {
 		if (!value) return undefined;
 		try {
-			return parseDateTime(value);
+			return parseDate(value);
 		} catch {
 			return undefined;
 		}
@@ -37,20 +37,20 @@
 
 	const label = $derived(
 		parsed
-			? parsed.toDate(getLocalTimeZone()).toLocaleString('en-US', {
+			? parsed.toDate(getLocalTimeZone()).toLocaleDateString('en-US', {
 					month: 'short',
 					day: 'numeric',
-					year: 'numeric',
-					hour: 'numeric',
-					minute: '2-digit'
+					year: 'numeric'
 				})
 			: placeholder
 	);
 
-	function handleChange(dt: CalendarDateTime) {
+	function handleSelect(date: DateValue | undefined) {
+		if (!date) return;
 		const pad = (n: number) => String(n).padStart(2, '0');
-		value = `${dt.year}-${pad(dt.month)}-${pad(dt.day)}T${pad(dt.hour)}:${pad(dt.minute)}`;
+		value = `${date.year}-${pad(date.month)}-${pad(date.day)}`;
 		onValueChange?.(value);
+		open = false;
 	}
 </script>
 
@@ -67,6 +67,6 @@
 		<span class={cn('truncate tabular-nums', !parsed && 'text-muted-foreground')}>{label}</span>
 	</Popover.Trigger>
 	<Popover.Content class="w-auto p-0" align="start">
-		<DateTimeCalendar value={parsed} onValueChange={handleChange} />
+		<Calendar type="single" value={parsed} onValueChange={handleSelect} />
 	</Popover.Content>
 </Popover.Root>

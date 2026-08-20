@@ -30,6 +30,8 @@ var (
 	ProjectRepository              = sqliterepo.ProjectRepository
 	ProjectUserRoleRepository      = sqliterepo.ProjectUserRoleRepository
 	RefreshTokenRepository         = sqliterepo.RefreshTokenRepository
+	SetupPlanRepository            = sqliterepo.SetupPlanRepository
+	SetupTokenRepository           = sqliterepo.SetupTokenRepository
 	StatusPageRepository           = sqliterepo.StatusPageRepository
 	SyntheticCheckRepository       = sqliterepo.SyntheticCheckRepository
 	SyntheticRunnerRepository      = sqliterepo.SyntheticRunnerRepository

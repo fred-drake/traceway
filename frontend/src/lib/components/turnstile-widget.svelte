@@ -59,6 +59,13 @@
 			window.turnstile.remove(widgetId);
 		}
 	});
+
+	export function reset() {
+		if (widgetId && window.turnstile) {
+			window.turnstile.reset(widgetId);
+			onVerify('');
+		}
+	}
 </script>
 
 <div bind:this={container} class="flex justify-center"></div>

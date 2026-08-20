@@ -20,9 +20,9 @@
 	import { projectsState, FRAMEWORK_LABELS, type Framework } from '$lib/state/projects.svelte';
 	import { themeState } from '$lib/state/theme.svelte';
 	import { toast } from 'svelte-sonner';
-	import FrameworkCombobox from '$lib/components/framework-combobox.svelte';
 	import TurnstileWidget from '$lib/components/turnstile-widget.svelte';
 	import OauthButtons from '$lib/components/oauth-buttons.svelte';
+	import SetupProjectsStep from '$lib/components/setup/setup-projects-step.svelte';
 
 	const DEFAULT_FRAMEWORK: Framework = 'opentelemetry';
 
@@ -31,19 +31,22 @@
 		return (value in FRAMEWORK_LABELS ? value : DEFAULT_FRAMEWORK) as Framework;
 	}
 
+	let step = $state<'account' | 'projects'>('account');
 	let email = $state(page.url.searchParams.get('email') ?? '');
 	let name = $state('');
 	let password = $state('');
 	let confirmPassword = $state('');
 	let organizationName = $state('');
 	let timezone = $state(Intl.DateTimeFormat().resolvedOptions().timeZone);
-	let projectName = $state('');
-	let framework = $state<Framework>(parseFrameworkParam(page.url.searchParams.get('framework')));
 	let error = $state('');
 	let loading = $state(false);
 	let captchaToken = $state('');
 	let passwordLoginEnabled = $state(true);
 	let providersLoaded = $state(false);
+	let newOrgId = $state<number | null>(null);
+	let turnstileWidget = $state<TurnstileWidget | null>(null);
+
+	const initialFramework = parseFrameworkParam(page.url.searchParams.get('framework'));
 
 	const turnstileSiteKey = __TURNSTILE_SITE_KEY__;
 	const captchaEnabled = turnstileSiteKey !== '';
@@ -52,7 +55,7 @@
 
 	if (!__CLOUD_MODE__) {
 		$effect(() => {
-			if (!providersLoaded) return;
+			if (!providersLoaded || step !== 'account') return;
 
 			// Password login is disabled - this page is inaccessible, send to login.
 			if (!passwordLoginEnabled) {
@@ -112,8 +115,6 @@
 					password,
 					organizationName,
 					timezone,
-					projectName,
-					framework,
 					captchaToken
 				})
 			});
@@ -127,11 +128,17 @@
 
 			authState.setToken(data.token);
 			authState.setOrganizations(data.organizations || []);
-			projectsState.setProjects(data.projects);
+			projectsState.setProjects(data.projects ?? []);
+			newOrgId = data.organizations?.[0]?.id ?? null;
 
-			goto(resolve('/'));
+			if (newOrgId === null) {
+				goto(resolve('/'));
+				return;
+			}
+			step = 'projects';
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Registration failed';
+			turnstileWidget?.reset();
 		} finally {
 			loading = false;
 		}
@@ -139,7 +146,7 @@
 </script>
 
 <div class="flex min-h-screen w-full items-center justify-center px-4 py-8">
-	<Card class="w-[400px]">
+	<Card class={step === 'projects' ? 'w-full max-w-2xl' : 'w-[400px]'}>
 		<CardHeader>
 			<CardTitle class="text-2xl">
 				<div class="flex flex-row items-center justify-center gap-2">
@@ -150,133 +157,133 @@
 					{/if}
 				</div>
 			</CardTitle>
-			<CardDescription class="text-center">Create your account</CardDescription>
+			<CardDescription class="text-center">
+				{#if step === 'projects'}
+					Set up your projects
+				{:else}
+					Create your account
+				{/if}
+			</CardDescription>
 		</CardHeader>
 		<CardContent>
-			{#if error}
-				<ErrorAlert {error} class="mb-4" />
-			{/if}
-			<OauthButtons bind:passwordLoginEnabled bind:loaded={providersLoaded} />
-			{#if providersLoaded && passwordLoginEnabled}
-				<form
-					onsubmit={(e) => {
-						e.preventDefault();
-						handleRegister();
-					}}
-					class="grid w-full items-center gap-4"
-				>
-					<div class="flex flex-col space-y-1.5">
-						<Label for="email">Email</Label>
-						<Input
-							id="email"
-							type="email"
-							bind:value={email}
-							placeholder="you@example.com"
-							required
-						/>
-					</div>
-					<div class="flex flex-col space-y-1.5">
-						<Label for="name">Name</Label>
-						<Input id="name" type="text" bind:value={name} placeholder="Your name" required />
-					</div>
-					<div class="flex flex-col space-y-1.5">
-						<Label for="password">Password</Label>
-						<Input
-							id="password"
-							type="password"
-							bind:value={password}
-							placeholder="Password (min 8 characters)"
-							required
-						/>
-					</div>
-					<div class="flex flex-col space-y-1.5">
-						<Label for="confirmPassword">Confirm Password</Label>
-						<Input
-							id="confirmPassword"
-							type="password"
-							bind:value={confirmPassword}
-							placeholder="Confirm password"
-							required
-						/>
-					</div>
-
-					<div class="mt-2 flex items-center gap-3">
-						<div class="flex-1 border-t"></div>
-						<p class="text-sm text-muted-foreground">Organization & Project</p>
-						<div class="flex-1 border-t"></div>
-					</div>
-
-					<div class="flex flex-col space-y-1.5">
-						<Label for="organizationName">Organization Name</Label>
-						<Input
-							id="organizationName"
-							type="text"
-							bind:value={organizationName}
-							placeholder="Your company or team"
-							required
-						/>
-					</div>
-					<div class="flex flex-col space-y-1.5">
-						<Label for="timezone">Timezone</Label>
-						<Select.Root type="single" bind:value={timezone}>
-							<Select.Trigger class="w-full">
-								<span>{timezone}</span>
-							</Select.Trigger>
-							<Select.Content class="max-h-60">
-								{#each timezones as tz, __index (__index)}
-									<Select.Item value={tz}>
-										{#snippet children({ selected })}
-											<span>{tz}</span>
-											{#if selected}
-												<Check class="absolute end-2 size-4" />
-											{/if}
-										{/snippet}
-									</Select.Item>
-								{/each}
-							</Select.Content>
-						</Select.Root>
-					</div>
-					<div class="flex flex-col space-y-1.5">
-						<Label for="projectName">Project Name</Label>
-						<Input
-							id="projectName"
-							type="text"
-							bind:value={projectName}
-							placeholder="My App"
-							required
-						/>
-					</div>
-					<div class="flex flex-col space-y-1.5">
-						<Label for="framework">Framework</Label>
-						<FrameworkCombobox bind:value={framework} />
-					</div>
-
-					{#if captchaEnabled}
-						<div class="mt-2 flex flex-col space-y-1.5">
-							<TurnstileWidget
-								siteKey={turnstileSiteKey}
-								onVerify={(token) => (captchaToken = token)}
-								onError={() => (captchaToken = '')}
+			{#if step === 'projects' && newOrgId !== null}
+				<SetupProjectsStep
+					organizationId={newOrgId}
+					{initialFramework}
+				/>
+			{:else}
+				{#if error}
+					<ErrorAlert {error} class="mb-4" />
+				{/if}
+				<OauthButtons bind:passwordLoginEnabled bind:loaded={providersLoaded} />
+				{#if providersLoaded && passwordLoginEnabled}
+					<form
+						onsubmit={(e) => {
+							e.preventDefault();
+							handleRegister();
+						}}
+						class="grid w-full items-center gap-4"
+					>
+						<div class="flex flex-col space-y-1.5">
+							<Label for="email">Email</Label>
+							<Input
+								id="email"
+								type="email"
+								bind:value={email}
+								placeholder="you@example.com"
+								required
 							/>
 						</div>
-					{/if}
+						<div class="flex flex-col space-y-1.5">
+							<Label for="name">Name</Label>
+							<Input id="name" type="text" bind:value={name} placeholder="Your name" required />
+						</div>
+						<div class="flex flex-col space-y-1.5">
+							<Label for="password">Password</Label>
+							<Input
+								id="password"
+								type="password"
+								bind:value={password}
+								placeholder="Password (min 8 characters)"
+								required
+							/>
+						</div>
+						<div class="flex flex-col space-y-1.5">
+							<Label for="confirmPassword">Confirm Password</Label>
+							<Input
+								id="confirmPassword"
+								type="password"
+								bind:value={confirmPassword}
+								placeholder="Confirm password"
+								required
+							/>
+						</div>
 
-					<Button
-						type="submit"
-						disabled={loading || (captchaEnabled && !captchaToken)}
-						class="mt-2 w-full"
-					>
-						{#if loading}
-							Creating account...
-						{:else}
-							Create Account
+						<div class="mt-2 flex items-center gap-3">
+							<div class="flex-1 border-t"></div>
+							<p class="text-sm text-muted-foreground">Organization</p>
+							<div class="flex-1 border-t"></div>
+						</div>
+
+						<div class="flex flex-col space-y-1.5">
+							<Label for="organizationName">Organization Name</Label>
+							<Input
+								id="organizationName"
+								type="text"
+								bind:value={organizationName}
+								placeholder="Your company or team"
+								required
+							/>
+						</div>
+						<div class="flex flex-col space-y-1.5">
+							<Label for="timezone">Timezone</Label>
+							<Select.Root type="single" bind:value={timezone}>
+								<Select.Trigger class="w-full">
+									<span>{timezone}</span>
+								</Select.Trigger>
+								<Select.Content class="max-h-60">
+									{#each timezones as tz, __index (__index)}
+										<Select.Item value={tz}>
+											{#snippet children({ selected })}
+												<span>{tz}</span>
+												{#if selected}
+													<Check class="absolute end-2 size-4" />
+												{/if}
+											{/snippet}
+										</Select.Item>
+									{/each}
+								</Select.Content>
+							</Select.Root>
+						</div>
+
+						{#if captchaEnabled}
+							<div class="mt-2 flex flex-col space-y-1.5">
+								<TurnstileWidget
+									bind:this={turnstileWidget}
+									siteKey={turnstileSiteKey}
+									onVerify={(token) => (captchaToken = token)}
+									onError={() => (captchaToken = '')}
+								/>
+							</div>
 						{/if}
-					</Button>
-				</form>
+
+						<Button
+							type="submit"
+							disabled={loading || (captchaEnabled && !captchaToken)}
+							class="mt-2 w-full"
+						>
+							{#if loading}
+								Creating account...
+							{:else}
+								Create Account
+							{/if}
+						</Button>
+					</form>
+				{/if}
 			{/if}
 		</CardContent>
 
-		{#if __CLOUD_MODE__}
+		{#if __CLOUD_MODE__ && step === 'account'}
 			<CardFooter class="flex flex-col justify-center">
 				<p class="text-sm text-muted-foreground">
 					Already have an account? <a href={resolve('/login')} class="text-primary hover:underline"

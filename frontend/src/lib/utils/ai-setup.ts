@@ -34,3 +34,18 @@ export function getSetupPrompt(
 		.map((p) => p.text)
 		.join('');
 }
+
+export function getSetupTokenPromptParts(backendUrl: string, setupToken: string): PromptPart[] {
+	return [
+		{ text: '/traceway-setup with setup token ', bold: false },
+		{ text: setupToken, bold: true },
+		{ text: ' and url ', bold: false },
+		{ text: backendUrl, bold: true }
+	];
+}
+
+export function getSetupTokenPrompt(backendUrl: string, setupToken: string): string {
+	return getSetupTokenPromptParts(backendUrl, setupToken)
+		.map((p) => p.text)
+		.join('');
+}

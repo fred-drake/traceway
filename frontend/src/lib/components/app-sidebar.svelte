@@ -47,7 +47,8 @@
 		'Tasks',
 		'Profiles',
 		'Dashboards',
-		'AI Traces'
+		'AI Traces',
+		'Monitors'
 	]);
 	const hiddenForCloudflare = new Set(['Dashboards']);
 	// Items that only make sense for frontend (browser) projects - dropped from
@@ -119,11 +120,12 @@
 	$effect(() => {
 		const projectId = projectsState.currentProjectId;
 		if (!projectId) return;
+		const hasMonitors = sidebarItems.some((item) => item.title === 'Monitors');
 		oncallState.refreshOpenCount();
-		monitorsState.refreshDownCount();
+		if (hasMonitors) monitorsState.refreshDownCount();
 		const interval = setInterval(() => {
 			oncallState.refreshOpenCount();
-			monitorsState.refreshDownCount();
+			if (hasMonitors) monitorsState.refreshDownCount();
 		}, 60000);
 		return () => clearInterval(interval);
 	});

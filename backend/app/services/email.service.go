@@ -95,6 +95,12 @@ func (e *emailService) IsEnabled() bool {
 	return e.enabled
 }
 
+// BaseURL is the dashboard origin used to absolutize links and reference the
+// logo in HTML notification emails.
+func (e *emailService) BaseURL() string {
+	return e.baseUrl
+}
+
 func (e *emailService) SendPasswordReset(toEmail string, token string) error {
 	resetUrl := fmt.Sprintf("%s/reset-password?token=%s", e.baseUrl, token)
 
@@ -134,7 +140,10 @@ The Traceway Team
 
 func (e *emailService) sendMail(to []string, msg []byte) error {
 	addr := net.JoinHostPort(e.host, strconv.Itoa(e.port))
-	auth := smtp.PlainAuth("", e.username, e.password, e.host)
+	var auth smtp.Auth
+	if e.username != "" {
+		auth = smtp.PlainAuth("", e.username, e.password, e.host)
+	}
 
 	conn, err := net.DialTimeout("tcp", addr, 10*time.Second)
 	if err != nil {
@@ -157,8 +166,10 @@ func (e *emailService) sendMail(to []string, msg []byte) error {
 		}
 	}
 
-	if err := client.Auth(auth); err != nil {
-		return fmt.Errorf("SMTP auth failed: %w", err)
+	if auth != nil {
+		if err := client.Auth(auth); err != nil {
+			return fmt.Errorf("SMTP auth failed: %w", err)
+		}
 	}
 	if err := client.Mail(e.from); err != nil {
 		return fmt.Errorf("SMTP MAIL failed: %w", err)

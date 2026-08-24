@@ -92,6 +92,7 @@ func RegisterControllers(router *gin.RouterGroup) {
 
 	router.POST("/metrics/query", middleware.UseAppAuth, middleware.RequireProjectAccess, MetricQueryController.Query)
 	router.GET("/metrics/discover", middleware.UseAppAuth, middleware.RequireProjectAccess, MetricQueryController.Discover)
+	router.GET("/metrics/discover/instances", middleware.UseAppAuth, middleware.RequireProjectAccess, MetricQueryController.DiscoverInstances)
 	router.GET("/metrics/discover/tags", middleware.UseAppAuth, middleware.RequireProjectAccess, MetricQueryController.DiscoverTags)
 	router.GET("/metrics/discover/org", middleware.UseAppAuth, MetricQueryController.DiscoverOrg)
 	router.PUT("/metrics/registry", middleware.UseAppAuth, middleware.RequireProjectAccess, middleware.RequireWriteAccess, MetricQueryController.UpdateRegistry)
@@ -277,6 +278,15 @@ func RegisterControllers(router *gin.RouterGroup) {
 	router.PUT("/organizations/:organizationId/status-pages/:id", middleware.UseAppAuth, middleware.RequireAdminAccess, middleware.Transactional, StatusPageController.Update)
 	router.DELETE("/organizations/:organizationId/status-pages/:id", middleware.UseAppAuth, middleware.RequireAdminAccess, middleware.Transactional, StatusPageController.Delete)
 	router.POST("/organizations/:organizationId/status-pages/:id/logo", middleware.UseAppAuth, middleware.RequireAdminAccess, middleware.Transactional, StatusPageController.UploadLogo)
+
+	// Org overview: servers/issues/monitors fan out over per-project telemetry
+	// queries, so they deliberately skip Transactional (RequireOrganizationAccess
+	// completes its own short transaction before the handler runs); the pure
+	// main-DB pages endpoint keeps it.
+	router.GET("/organizations/:organizationId/overview/servers", middleware.UseAppAuth, middleware.RequireOrganizationAccess, OrganizationOverviewController.Servers)
+	router.GET("/organizations/:organizationId/overview/issues", middleware.UseAppAuth, middleware.RequireOrganizationAccess, OrganizationOverviewController.Issues)
+	router.GET("/organizations/:organizationId/overview/pages", middleware.UseAppAuth, middleware.RequireOrganizationAccess, middleware.Transactional, OrganizationOverviewController.Pages)
+	router.GET("/organizations/:organizationId/overview/monitors", middleware.UseAppAuth, middleware.RequireOrganizationAccess, OrganizationOverviewController.Monitors)
 
 	router.GET("/organizations/:organizationId/incidents", middleware.UseAppAuth, middleware.RequireOrganizationAccess, middleware.Transactional, IncidentController.List)
 	router.GET("/organizations/:organizationId/incidents/:incidentId/updates", middleware.UseAppAuth, middleware.RequireOrganizationAccess, middleware.Transactional, IncidentController.ListUpdates)

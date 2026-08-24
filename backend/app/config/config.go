@@ -84,6 +84,7 @@ type Cfg struct {
 	SMTPFrom     string
 
 	AppBaseURL            string
+	EmailPreviewEnabled   string
 	CloudMode             string
 	MonitoringTracewayURL string
 	APIOnly               string
@@ -221,6 +222,7 @@ func LoadFromEnv() *Cfg {
 		SMTPFrom:     os.Getenv("SMTP_FROM"),
 
 		AppBaseURL:            os.Getenv("APP_BASE_URL"),
+		EmailPreviewEnabled:   os.Getenv("EMAIL_PREVIEW_ENABLED"),
 		CloudMode:             os.Getenv("CLOUD_MODE"),
 		MonitoringTracewayURL: os.Getenv("MONITORING_TRACEWAY_URL"),
 		APIOnly:               os.Getenv("API_ONLY"),

@@ -82,6 +82,11 @@ func RegisterControllers(router *gin.RouterGroup) {
 
 	router.GET("/health/deep", middleware.UseHealthDeepToken, HealthDeepController.Get)
 
+	if config.Config.EmailPreviewEnabled == "true" {
+		router.GET("/email-preview", EmailPreviewController.Index)
+		router.GET("/email-preview/:template", EmailPreviewController.Show)
+	}
+
 	router.POST("/stats", middleware.UseAppAuth, middleware.RequireProjectAccess, MetricRecordController.FindHomepageStats)
 	router.GET("/dashboard", middleware.UseAppAuth, middleware.RequireProjectAccess, DashboardController.GetDashboard)
 	router.GET("/dashboard/overview", middleware.UseAppAuth, middleware.RequireProjectAccess, DashboardController.GetDashboardOverview)

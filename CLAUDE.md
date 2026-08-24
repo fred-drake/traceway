@@ -263,6 +263,9 @@ DUCKDB_CHECKPOINT_THRESHOLD=          # e.g. 256MB. Unset = DuckDB default (16MB
 INGEST_MAX_CONCURRENT=                # max concurrently processed ingest requests. Unset = 2×CPU cores, min 4. Bounds ingest memory so overload sheds load with 503s instead of the process being OOM-killed (on DuckDB an OOM death is followed by a minutes-long WAL-replay stall on restart).
 INGEST_ADMISSION_WAIT_SECONDS=5       # how long a request may wait for a slot before the 503 + Retry-After; 0 = reject immediately when saturated
 
+# Email
+EMAIL_PREVIEW_ENABLED=false           # "true" registers GET /api/email-preview[/:template], rendering every email template with sample data for design review. Off by default; never enable in production.
+
 # Notifications
 NOTIFICATION_POLL_SECONDS=60          # polled rule evaluation interval; minimum 5, invalid values fall back to 60
 ONCALL_POLL_SECONDS=30                # on-call escalation worker interval; minimum 5, invalid values fall back to 30. Kept separate from NOTIFICATION_POLL_SECONDS so raising rule-evaluation intervals never delays paging. A buffered Wake() channel makes freshly opened pages notify L1 near-instantly regardless of this interval.
@@ -1212,15 +1215,17 @@ if err != nil {
 - **Validation errors** (user-facing): `c.JSON(422, gin.H{"error": "message"})` for form validation
 - **Always** wrap errors with `traceway.NewStackTraceErrorf` or `fmt.Errorf` using `%w` — never discard the original error
 
-### Notification Email Templates (HTML)
+### Emails
 
-Notification/alert/monitor emails are sent as styled HTML through one shared layout; only the email adapter renders HTML, every other channel stays plaintext.
+Every email Traceway sends is a hardcoded template in `backend/app/services/emailtemplates/` (embedded with `go:embed`, parsed once at init). The copy of an email lives in its own `.gohtml` file; the payload is the only thing it interpolates. There is no shared layout document, so changing one email cannot reshape the others, and every file is a complete HTML document styled like the rest.
 
-- **`backend/app/services/emailtemplate/`** — the layout (`base.gohtml`, embedded via `go:embed`, parsed once with `template.Must`) and `Render(Data)`. `Data` fields: `Title`, `Badge`/`BadgeColor` (severity chip; `ColorCritical`/`ColorWarning`/`ColorInfo`), `Paragraphs` (internal `\n` becomes `<br>` via the `nl2br` func), `Details` (label/value rows, monospace values), `CodeBlock` (stack traces, probe errors), `Button` (always the dashboard's outline style — white background, `#d1d9e0` border; severity never colors the button, only the badge), `FooterNote`, `LogoURL` (`LogoURL(baseURL)` = `{APP_BASE_URL}/traceway-mark.png`), `Preheader` (defaults to the first paragraph). Table-based markup with inline styles for Gmail/Outlook; all content is escaped by `html/template`.
-- **`emailtemplate.BuildMIME(from, to, subject, textBody, htmlBody)`** — composes `multipart/alternative` (plaintext part first, then HTML), quoted-printable both parts, RFC 2047 subject. Empty `htmlBody` yields a single-part plaintext message. Used by the notifications email adapter; the invitation/password-reset emails in `services/email.service.go` are deliberately still plaintext.
-- **Structured message fields** (`models.NotificationMessage`): optional `Intro`, `Details []NotificationMessageDetail`, `CodeBlock`, `ActionLabel`, all `json:",omitempty"`. When any of `Intro`/`Details`/`CodeBlock` is set, `renderMessageHTML` in `adapter_email.go` renders them instead of `Body`; otherwise `Body` is split into paragraphs on blank lines. `Body` must therefore always stay complete on its own — Slack/Telegram/SMS/webhook and `fired_notifications` only ever see `Body`. The fields round-trip through the outbox (the whole `Message` is persisted as JSON), so no migration is needed when adding more; rows enqueued before an upgrade fall back to the generic rendering.
-- **Buttons/links**: relative `msg.URL`s are absolutized against `services.EmailService.BaseURL()`; `ActionLabel` overrides the default "View in Traceway" (builders use "View Issue", "View Monitor", "Acknowledge Page"). `msg.HTMLBody`, when set, bypasses the template entirely.
-- **Adding a new rule type's email**: nothing to do for a plain sentence (generic path). For richer emails, set `Intro`/`Details`/`CodeBlock`/`ActionLabel` on the `Message` in `messages.go` while keeping `Body` self-contained (see `buildNewErrorMessage` / `buildCheckDownMessage`).
+Templates: `new_error`, `error_regression`, `check_down`, `check_recovered`, `alert` (the threshold email every rate/latency/apdex/throughput/task/impact/cost rule sends), `ai_flagged`, `page` (on-call escalation), `test` (both test buttons), `invitation`, `password_reset`.
+
+- **One send path** — `services.SendEmail(ctx, services.Email{...})` in `backend/app/services/email.service.go` is the only way mail leaves the process: it renders the template, wraps it as `multipart/alternative` (plaintext part first, quoted-printable), and talks SMTP. With `SMTP_ENABLED` off it logs the plaintext instead. `services.RenderEmail` is the render-only half, used by the preview endpoint.
+- **`services.Email`** carries the chrome every template shares (`Title`, `Badge`/`BadgeColor` via `EmailColor*`, `URL`, `Footer`, `LogoURL` defaulting to `{APP_BASE_URL}/traceway-mark.png`) plus `Template` and `Data`, the typed payload reached as `{{.Data.X}}`. `Text` is the plaintext alternative and must stand on its own.
+- **Notification payloads** live on `models.NotificationMessage.Email` (`models.NotificationEmail`: a template name plus one typed struct — `EmailException`, `EmailCheck`, `EmailAlert`, `EmailFlagged`, `EmailPage`, `EmailTest`). The builders in `notifications/messages.go` attach it; `services.NotificationEmail` turns a message into the `Email` at send time (severity chip, absolute link, "why you got this" footer). It rides through the notification outbox as JSON, so the shape is a wire format: add fields, never repurpose them. Only the email adapter reads it — Slack/Telegram/SMS/webhook and `fired_notifications` still see `Body` alone, so `Body` must always stay complete.
+- **Adding an email**: add `emailtemplates/<name>.gohtml`, add its payload struct, and call `SendEmail` with `Template: "<name>"`. For a new rule type that only needs a sentence and a link, reuse `alert` by filling `models.EmailAlert`.
+- **Preview**: `EMAIL_PREVIEW_ENABLED=true` registers `GET /api/email-preview` (index) and `GET /api/email-preview/:template`, which renders any template with sample data (`?format=text` shows the plaintext alternative). Off by default, so it is never a route in production. Sample data lives in `controllers/email_preview.controller.go`.
 
 ---
 

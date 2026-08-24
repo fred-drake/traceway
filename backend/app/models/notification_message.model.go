@@ -21,14 +21,7 @@ type NotificationMessage struct {
 	URL      string
 	Endpoint string
 
-	// Optional structured presentation for HTML-capable adapters (email).
-	// When any of Intro/Details/CodeBlock is set, the email adapter renders
-	// them instead of the plaintext Body; every other adapter keeps using
-	// Body, so builders must keep Body complete on its own.
-	Intro       string                      `json:",omitempty"`
-	Details     []NotificationMessageDetail `json:",omitempty"`
-	CodeBlock   string                      `json:",omitempty"`
-	ActionLabel string                      `json:",omitempty"`
+	Email *NotificationEmail `json:",omitempty"`
 
 	// DedupToken is the stable identity of what fired within the rule
 	// (exception hash, endpoint, task or metric name; empty for rule-level
@@ -38,9 +31,77 @@ type NotificationMessage struct {
 	DedupToken string `json:"-"`
 }
 
-// NotificationMessageDetail is one label/value row rendered as a details
-// table in HTML emails (exception id, hash, server, ...).
-type NotificationMessageDetail struct {
+const (
+	EmailTemplateNewError        = "new_error"
+	EmailTemplateErrorRegression = "error_regression"
+	EmailTemplateCheckDown       = "check_down"
+	EmailTemplateCheckRecovered  = "check_recovered"
+	EmailTemplateAlert           = "alert"
+	EmailTemplateAiFlagged       = "ai_flagged"
+	EmailTemplatePage            = "page"
+	EmailTemplateTest            = "test"
+)
+
+type NotificationEmail struct {
+	Template  string
+	Exception *EmailException `json:",omitempty"`
+	Check     *EmailCheck     `json:",omitempty"`
+	Alert     *EmailAlert     `json:",omitempty"`
+	Flagged   *EmailFlagged   `json:",omitempty"`
+	Page      *EmailPage      `json:",omitempty"`
+	Test      *EmailTest      `json:",omitempty"`
+}
+
+type EmailField struct {
 	Label string
 	Value string
+}
+
+type EmailException struct {
+	ProjectName string
+	ErrorType   string
+	ExceptionId string
+	Hash        string
+	OccurredAt  string
+	AppVersion  string
+	ServerName  string
+	TraceLabel  string
+	TraceName   string
+	Attributes  []EmailField `json:",omitempty"`
+	StackTrace  string
+}
+
+type EmailCheck struct {
+	ProjectName         string
+	CheckName           string
+	ConsecutiveFailures int
+	LastError           string
+}
+
+type EmailAlert struct {
+	ProjectName string
+	Headline    string
+	ScopeLabel  string
+	Scope       string
+	Observed    string
+	Threshold   string
+	WindowMins  int
+}
+
+type EmailFlagged struct {
+	ProjectName    string
+	ConversationId string
+	UserId         string
+	Terms          []string
+}
+
+type EmailPage struct {
+	BodyText        string
+	RuleName        string
+	EventCount      int
+	EscalationLevel int
+}
+
+type EmailTest struct {
+	Target string
 }

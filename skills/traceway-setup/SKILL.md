@@ -43,7 +43,7 @@ Still run Step 1, because it decides *how* to instrument. Collapse "Propose and 
 Before changing anything, build a picture of what is deployed and what is already instrumented:
 
 1. **Frameworks and languages**: detect them from `package.json`, `go.mod`, `composer.json`, `requirements.txt`/`pyproject.toml`, `pubspec.yaml`, `build.gradle`(`.kts`), `Package.swift`, `*.xcodeproj`/`*.xcworkspace`, `Podfile`, and source extensions. For iOS/Apple targets, note whether the sources are Swift or Objective-C. That choice picks the path in "Frontend and Mobile" (Swift gets the native SDK; Objective-C-only has none and falls back to OTel).
-2. **Deployable components and entry points**: inventory APIs, SSR servers, browser apps, workers, schedulers, CLIs, and mobile applications. Treat code organization as evidence, not proof that something is deployed.
+2. **Deployable components and entry points**: inventory APIs, SSR servers, browser apps, workers, schedulers, CLIs, and mobile applications. Treat code organization as evidence, not proof that something is deployed. Note the deployment target while you are here: Kubernetes manifests, a Helm chart, Kustomize overlays, `Dockerfile` plus a compose file, or cloud-init / Ansible / Terraform. It decides the host-metrics path in Step 8.
 3. **Existing observability**: find OpenTelemetry configuration, Traceway SDKs, Sentry, Datadog, New Relic, Honeycomb, logging exporters, tracing middleware, source map or symbol upload steps, and observability environment-variable names. Explain whether Traceway will replace, coexist with, or extend each integration. Never display discovered credential values.
 4. **Production role of JS meta-frameworks** (Next.js, SvelteKit, Remix, Nuxt): never assume full-stack.
    - **Frontend-only signals**: `output: 'export'` in `next.config.*` (static export, so there is no server in production); no API routes (`app/api/**/route.*`, `pages/api/*`) or only trivial ones; no `'use server'` server actions; `rewrites`/proxy config or a `NEXT_PUBLIC_API_URL`-style env var pointing the browser at an external API; a separate backend service in this repo, another repo, or another language; static hosting in the deploy config (S3/CloudFront, GitHub Pages, nginx serving `out/`).
@@ -660,9 +660,11 @@ Use the deployment and host-metrics choice confirmed in "Propose and Confirm the
 | Deployment | Wants host metrics | What to do |
 |---|---|---|
 | Docker on a VM, or directly on a VM/host | Yes | Install the **Traceway OTel Agent** on the host (below). For Docker deploys this is the default; the agent goes on the host, not in a container. |
-| Kubernetes | Any | Agent not applicable (host service, no Docker image or K8s manifests by design). In-process app metrics still flow via the OTLP metrics exporter from "Backend OTel Setup". |
+| Kubernetes | Any | Not the agent, which is a host service. Deploy the two collector workloads in `kubernetes.md` in this skill directory: a DaemonSet for node metrics, pod metrics and container logs, and a one-replica Deployment for cluster state and events. In-process app metrics still flow via the OTLP metrics exporter from "Backend OTel Setup". |
 | Serverless / PaaS | Any | No host to install on; skip. |
 | Anything | No | Skip. |
+
+On Kubernetes, stop here and read `kubernetes.md` in this skill directory. The four things that decide whether it works (`service.name` per node, the three `*.utilization` metrics that ship disabled, `k8s.cluster.name`, and `root_path: /hostfs`) are all easy to miss, and getting any of them wrong produces a plausible-looking config that reports nothing useful.
 
 The agent is a tiny pre-configured OTel Collector that scrapes host metrics every 60s. It MUST use the same backend project token as the API, workers, tasks, and AI traces. Install it on the host (Linux systemd / macOS launchd; PowerShell installer exists for Windows):
 
@@ -696,6 +698,7 @@ When the CLI applied the plan, the local env files hold real values, so run loca
    - If logs were wired, emit one INFO and one ERROR line inside a request, then open `/logs`. Both carry the same trace id as that endpoint.
    - If "AI Traces" applied, make one model call, then open `/ai-traces`. The call is listed with model, tokens, and cost where available.
    - Open `/dashboards` and confirm application/runtime metrics arrive. If the OTel Agent was installed, host metrics reach this same backend project within about 60 seconds, each host under its own `server_name` tag.
+   - If host or Kubernetes metrics were set up, open `/organization`. Every host and node appears as its own instance row with CPU, memory and disk. Kubernetes nodes are grouped by cluster. One row where you expected several means `service.name` is not distinct per machine; empty rings mean the `*.utilization` metrics are not enabled.
 2. **Browser project**
    - Trigger a test browser error and confirm it appears in this project, not the backend project.
    - Confirm the stack resolves to original source files and lines after the matching source maps and bundles are uploaded.

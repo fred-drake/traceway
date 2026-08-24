@@ -646,6 +646,7 @@ backend/
 | POST | `/api/metrics/query` | App | Custom metric queries |
 | GET | `/api/metrics/discover` | App | Discover available metrics |
 | GET | `/api/metrics/discover/tags` | App | Discover metric tags |
+| GET | `/api/metrics/discover/instances` | App | Distinct `server_name` values in a range (dashboard instance filter) |
 | PUT | `/api/metrics/registry` | App+Write | Update metric registry entry |
 
 **Dashboards & Templates**
@@ -736,6 +737,19 @@ Frontend routes: `/ai-traces` (tabs: Traces, Conversations, Users), `/ai-traces/
 | DELETE | `/api/organizations/:orgId/members/:userId` | Admin | Remove member |
 | GET | `/api/organizations/:orgId/members/:userId/project-roles` | Admin | List member's per-project role overrides |
 | PUT | `/api/organizations/:orgId/members/:userId/project-roles/:projectId` | Admin | Set/clear a per-project role override |
+
+**Organization Overview** (`/organization` frontend route, tabs Overview | Issues | Monitors | Projects)
+
+Org-wide read views that fan out over every project of the org, in `organization_overview.controller.go`. `RequireOrganizationAccess` (any org role) gates them; the servers/issues/monitors handlers deliberately skip `Transactional` because they run per-project telemetry queries and must not hold the single-connection SQLite main DB across them (they open their own short `db.ExecuteTransaction` for the project list first). The pure main-DB pages endpoint keeps `Transactional`. The frontend renders `/organization` without the project sidebar and auto-lands there after login when the first org has more than one project (`frontend/src/lib/utils/landing.ts`).
+
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| GET | `/api/organizations/:organizationId/overview/servers` | Member | One row per `server_name` per project over the last 30 min: CPU/memory/disk/network + a CPU sparkline, plus host/os/cloud/k8s metadata lifted from metric tags. Reads OTel hostmetrics (`system.cpu.utilization` state=idle inverted, `system.memory.utilization` state=used, `system.filesystem.utilization` state=used, `system.network.io` by direction) and falls back to the legacy SDK names (`cpu.used_pcnt`, `mem.used`/`mem.total`). A project that fails to read sets `partial: true` instead of failing the request |
+| GET | `/api/organizations/:organizationId/overview/issues` | Member | Recently active issues across all projects, last 24h, max 50, plus the true `totalGroups` |
+| GET | `/api/organizations/:organizationId/overview/pages` | Member | Active on-call pages across all projects + open-page and down-monitor counts |
+| GET | `/api/organizations/:organizationId/overview/monitors` | Member | Every synthetic check in the org with 30-day aggregates |
+
+Instance identity is the `server_name` tag, which comes from the OTLP `service.name` resource attribute; grouping by Kubernetes cluster keys off the `k8s.cluster.name` tag and the group selector only offers it when at least one instance carries one. Clicking a row opens `/dashboards?projectId=&server=&preset=30m` (plus `dashboard=` when the project has the `traceway-otel-agent` template applied); `server` scopes every widget query via `scopeTagFilters` in `widget-grid`/`widget-renderer`. Cluster-wide instrumentation manifests live in `examples/kubernetes/`, documented at `docs/pages/learn/kubernetes.mdx`.
 
 **Invitations**
 | Method | Endpoint | Auth | Purpose |

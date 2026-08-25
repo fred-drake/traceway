@@ -860,12 +860,14 @@
 		onSearch={handleSearch}
 		disabled={loading}
 	>
-		<ToolbarSelect
-			value={String(minSeverity)}
-			options={severityOptions}
-			class="w-[130px]"
-			onChange={handleSeverityChange}
-		/>
+		{#snippet pillEnd()}
+			<ToolbarSelect
+				value={String(minSeverity)}
+				options={severityOptions}
+				class="h-9 w-[130px] shrink-0 shadow-none sm:rounded-none sm:border-r-0"
+				onChange={handleSeverityChange}
+			/>
+		{/snippet}
 	</SearchBar>
 
 	<div class="flex flex-wrap items-center gap-2">

@@ -22,6 +22,13 @@
 		 * own row on narrow screens instead of squeezing the input.
 		 */
 		children?: Snippet;
+		/**
+		 * Optional slot rendered inside the joined search unit, between the type
+		 * select (if any) and the Go button. Use for a control that should share
+		 * the pill's borders instead of standing on its own - style it with
+		 * `rounded-none border-r-0` to match.
+		 */
+		pillEnd?: Snippet;
 	};
 
 	let {
@@ -31,17 +38,20 @@
 		typeOptions = [],
 		onSearch,
 		disabled = false,
-		children
+		children,
+		pillEnd
 	}: Props = $props();
 
 	const typeLabel = $derived(typeOptions.find((o) => o.value === typeValue)?.label ?? '');
 </script>
 
 <div class="flex flex-wrap items-center gap-2">
-	<div class="flex min-w-fit flex-1 sm:min-w-0 sm:flex-initial">
+	<div
+		class="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:min-w-0 sm:flex-initial sm:flex-nowrap sm:gap-0"
+	>
 		<Input
 			{placeholder}
-			class="h-9 w-full min-w-[140px] rounded-r-none border-r-0 shadow-none focus-visible:border-r focus-visible:border-ring focus-visible:ring-0 sm:w-[250px] lg:w-[320px]"
+			class="h-9 w-full min-w-[140px] shadow-none sm:w-[250px] sm:rounded-r-none sm:border-r-0 sm:focus-visible:border-r sm:focus-visible:border-ring sm:focus-visible:ring-0 lg:w-[320px]"
 			bind:value
 			onkeydown={(e) => {
 				if (e.key === 'Enter') onSearch();
@@ -50,7 +60,9 @@
 
 		{#if typeOptions.length > 0}
 			<Select.Root type="single" bind:value={typeValue}>
-				<Select.Trigger class="h-9 w-[110px] shrink-0 rounded-none border-r-0 shadow-none">
+				<Select.Trigger
+					class="h-9 w-fit shrink-0 shadow-none sm:rounded-none sm:border-r-0"
+				>
 					{typeLabel}
 				</Select.Trigger>
 				<Select.Content>
@@ -63,7 +75,14 @@
 			</Select.Root>
 		{/if}
 
-		<Button variant="outline" class="h-9 rounded-l-none shadow-none" onclick={onSearch} {disabled}>
+		{@render pillEnd?.()}
+
+		<Button
+			variant="outline"
+			class="h-9 shadow-none sm:rounded-l-none"
+			onclick={onSearch}
+			{disabled}
+		>
 			Go
 		</Button>
 	</div>

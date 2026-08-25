@@ -288,7 +288,12 @@
 		onSearch={handleSearch}
 		disabled={loading}
 	>
-		<RootFilter bind:value={rootFilter} />
+		{#snippet pillEnd()}
+			<RootFilter
+				bind:value={rootFilter}
+				class="h-9 w-[110px] shrink-0 shadow-none sm:rounded-none sm:border-r-0"
+			/>
+		{/snippet}
 	</SearchBar>
 
 	<!-- AI Traces Table -->

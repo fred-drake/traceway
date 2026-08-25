@@ -14,7 +14,6 @@
 	import { PaginationFooter } from '$lib/components/ui/pagination-footer';
 	import { TimeRangePicker } from '$lib/components/ui/time-range-picker';
 	import { SearchBar } from '$lib/components/ui/search-bar';
-	import { RootFilter } from '$lib/components/ui/root-filter';
 	import { NonRootChip } from '$lib/components/ui/non-root-chip';
 	import EndpointName from '$lib/components/endpoint-name.svelte';
 	import { browser } from '$app/environment';
@@ -43,6 +42,7 @@
 		handleSortClick,
 		type SortDirection
 	} from '$lib/utils/sort-storage';
+	import { EndpointFilter } from '$lib/components/ui/endpoint-filter';
 
 	const timezone = $derived(getTimezone());
 	const initialTimezone = getTimezone();
@@ -111,13 +111,14 @@
 
 	// Parse URL params including search + rootFilter
 	function parseEndpointsUrlParams() {
-		if (!browser) return { preset: '24h', from: null, to: null, search: '', rootFilter: 'all' };
+		if (!browser) return { preset: '24h', from: null, to: null, search: '', rootFilter: 'all', methodFilter: 'all' };
 		const params = new URLSearchParams(window.location.search);
 		const timeParams = parseTimeRangeFromUrl(timezone, '24h');
 		return {
 			...timeParams,
 			search: params.get('search') || '',
-			rootFilter: params.get('rootFilter') || 'all'
+			rootFilter: params.get('rootFilter') || 'all',
+			methodFilter: params.get('methodFilter') || 'all'
 		};
 	}
 
@@ -128,6 +129,7 @@
 	// Search + rootFilter state
 	let searchQuery = $state(initialUrlParams.search);
 	let rootFilter = $state(initialUrlParams.rootFilter);
+	let methodFilter = $state(initialUrlParams.methodFilter);
 
 	// Date Range State
 	let selectedPreset = $state<string | null>(initialUrlParams.preset);
@@ -151,6 +153,9 @@
 		if (rootFilter && rootFilter !== 'all') {
 			params.rootFilter = rootFilter;
 		}
+		if (methodFilter && methodFilter !== 'all') {
+			params.methodFilter = methodFilter;
+		}
 		updateUrl(params, { pushToHistory });
 	}
 
@@ -166,6 +171,7 @@
 		toTime = dateToTimeString(range.to, timezone);
 		searchQuery = urlParams.search;
 		rootFilter = urlParams.rootFilter;
+		methodFilter = urlParams.methodFilter;
 
 		page = 1;
 		loadData(false);
@@ -293,7 +299,8 @@
 					pageSize: pageSize
 				},
 				search: searchQuery.trim(),
-				rootFilter: rootFilter === 'all' ? '' : rootFilter
+				rootFilter: rootFilter === 'all' ? '' : rootFilter,
+				methodFilter: methodFilter === 'all' ? '' : methodFilter,
 			};
 
 			const response = await api.post('/endpoints/grouped', requestBody, {
@@ -433,7 +440,9 @@
 		onSearch={handleSearch}
 		disabled={loading}
 	>
-		<RootFilter bind:value={rootFilter} />
+		{#snippet pillEnd()}
+			<EndpointFilter bind:rootValue={rootFilter} bind:methodValue={methodFilter} />
+		{/snippet}
 	</SearchBar>
 
 	<!-- Performance Chart -->
@@ -466,7 +475,7 @@
 	</ChartCard>
 
 	<!-- Endpoints Table -->
-	<TableContainer minWidth="860px">
+	<TableContainer minWidth="860px" empty={loading || !!error || endpoints.length === 0}>
 		<Table.Root>
 			{#if loading}
 				<Table.Body>

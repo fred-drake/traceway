@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -69,4 +70,30 @@ func clientIPRouter(t *testing.T, cfg *config.Cfg) *gin.Engine {
 		c.String(http.StatusOK, c.ClientIP())
 	})
 	return router
+}
+
+func TestUntrustedForwarderDetectorFiresOnceForPeersOutsideTheList(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	detect := newUntrustedForwarderDetector([]string{"10.0.0.0/8", "::1"})
+	check := func(peer, xff string) (string, bool) {
+		c, _ := gin.CreateTestContext(httptest.NewRecorder())
+		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
+		c.Request.RemoteAddr = net.JoinHostPort(peer, "1234")
+		if xff != "" {
+			c.Request.Header.Set("X-Forwarded-For", xff)
+		}
+		return detect(c)
+	}
+	if _, first := check("203.0.113.9", ""); first {
+		t.Fatal("fired without a forwarding header")
+	}
+	if _, first := check("10.1.2.3", "198.51.100.20"); first {
+		t.Fatal("fired for a trusted peer")
+	}
+	if peer, first := check("172.17.0.1", "198.51.100.20"); !first || peer != "172.17.0.1" {
+		t.Fatalf("got (%q, %v), want the untrusted peer reported", peer, first)
+	}
+	if _, first := check("172.17.0.1", "198.51.100.20"); first {
+		t.Fatal("fired a second time")
+	}
 }

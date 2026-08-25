@@ -119,6 +119,8 @@ func (c *AuthController) Register(ctx *gin.Context) {
 - Commits on status codes: 200, 201, 303
 - Rolls back on all other status codes or panics
 
+**Body buffering:** `Transactional` reads the request body into memory (cap `maxTransactionalBodyBytes`, 8MB) before it calls `db.DB.Begin()`, answering 413/408/400 without a transaction when that fails; the handler's later bind is served from memory. This is what keeps a slow-drip body from holding the single SQLite main-DB connection, and it covers every transactional route without each one remembering a special middleware. Routes that want a tighter cap put `middleware.BufferAuthBody` (64KB) in front of `Transactional`, which then skips the body it finds already buffered; the anonymous auth endpoints do this. The self-transacting OAuth routes (`/auth/device/*`, `/auth/token`, `/auth/logout`) use `BufferAuthBody` on its own for the same cap. Every other bind failure that is really a body problem goes through `middleware.RejectBindError`, which maps `MaxBytesError` to 413 and the guard's deadline errors to 408 with fixed messages (the deadline error is a `*net.OpError` naming the listener address, so it is never echoed).
+
 **Preference:** For CRUD controller methods, always prefer using `middleware.Transactional` in the route + `db.GetTx(ctx)` in the controller over `pgdb.ExecuteTransaction`. The middleware approach keeps controllers flat, avoids nested closures, and follows the established pattern. (The tx getter lives in the `db` package: `db.GetTx(ctx)`, not `middleware.GetTx`.)
 
 #### Repository Pattern
@@ -242,8 +244,10 @@ if err != nil {
 ```
 JWT_SECRET=<min 32 char secret for JWT signing>
 APP_BASE_URL=                         # public origin of this server (e.g. https://traceway.example.com). Used as the OAuth issuer / device verification URL and SSO redirect base. If unset, the device-auth + well-known endpoints derive it per-request from the Host / X-Forwarded-* headers; set it explicitly behind a proxy that doesn't forward Host.
-TRUSTED_PROXIES=127.0.0.1,::1         # comma-separated IPs/CIDRs of reverse proxies whose X-Forwarded-For gin trusts when resolving c.ClientIP(), the per-IP rate-limit key (cmd/run.go SetTrustedProxies via cfg.TrustedProxyList; default loopback so a direct client cannot spoof it, "*" restores gin's trust-everything behavior). The unauthenticated credential endpoints sit behind middleware.RateLimitPerIP — budgets live in routes.go — placed before Transactional so throttled requests never open a transaction.
-TRUSTED_PROXY_HEADER=                 # optional header trusted verbatim as the client IP (gin TrustedPlatform, e.g. X-Real-IP behind ingress-nginx, CF-Connecting-IP behind Cloudflare); takes precedence over TRUSTED_PROXIES. Only safe when every request path goes through a proxy that overwrites the header
+TRUSTED_PROXIES=                      # comma-separated IPs/CIDRs whose X-Forwarded-For/X-Real-IP gin trusts for c.ClientIP() (every per-IP rate limiter keys on it, and `/api/report` stores it on every session as `client.ip`). Unset = loopback only, so no peer can spoof its IP. Private ranges are deliberately NOT trusted by default: on a Docker/k8s network every peer has a private address, the clients included when the port is published directly, so trusting RFC1918 would let any of them forge XFF past every per-IP limiter. Set it to the CIDRs of whatever sits in front (a proxy container's compose network, the ingress pod range, the CDN ranges); otherwise every visitor shares one rate-limit bucket keyed on the proxy. The value REPLACES the default, so it must name every hop in the chain, not just the outermost (a CDN-only list leaves a private ingress untrusted and disables XFF entirely); `*` trusts every peer. A malformed entry panics at startup (`configureClientIP`, cmd/run.go). The first request carrying X-Forwarded-For/X-Real-IP from a peer outside the list logs a one-time warning naming that peer (`warnOnUntrustedForwardedFor`, cmd/run.go), which is how a forgotten proxy hop shows up. Parsing lives in `Cfg.TrustedProxyList` (config.go), covered by config_test.go.
+TRUSTED_PROXY_HEADER=                 # optional header taken verbatim as the client IP on every request (gin TrustedPlatform: X-Real-IP behind ingress-nginx, CF-Connecting-IP behind Cloudflare); it wins over TRUSTED_PROXIES and turns the untrusted-forwarder warning off. Only safe when every request provably passes through a proxy that overwrites the header.
+UPLOAD_MAX_CONCURRENT=4               # concurrent /api/sourcemaps/upload + /api/symbols/upload requests; excess waits 30s then gets 503. Separate from INGEST_MAX_CONCURRENT so a CI upload burst cannot starve telemetry ingest. Each upload holds a whole file in memory while parsing, so this bounds peak upload memory at roughly concurrency x largest file. It is a count-based gate, not a memory budget: on a memory-capped container size it from the limit rather than trusting the default. Same gate and bounded waiting room as ingest, its own instance. The source-map warm-up that follows an upload (`services.GenerateTWArtifacts`) runs outside this gate on its own 2-worker pool with a 64-job queue: the stale `.tw` artifact is deleted and the cache invalidated inline, the rebuild is queued, identical pending jobs are coalesced, and a full queue drops the warm-up (rate-limited `CaptureException`) because lookups build a missing artifact on demand anyway.
+REPORT_MAX_BODY_MB=64                 # cap on the DECOMPRESSED /api/report and /api/profiles/ingest body (middleware.UseGzip bounds both the raw and gunzipped stream, so gzip cannot raise it). Deliberately far above the 10MB OTLP cap: session-replay frames carry rrweb segments and are a different size class, and the shipped browser SDKs re-queue a rejected batch forever, so a reachable cap is a permanent wedge rather than shed load. Overruns answer 413.
 CLICKHOUSE_SERVER=localhost:9000
 CLICKHOUSE_DATABASE=traceway
 CLICKHOUSE_USERNAME=default
@@ -262,7 +266,7 @@ DUCKDB_THREADS=                       # e.g. 4. Unset = DuckDB auto-tunes (= cor
 DUCKDB_CHECKPOINT_THRESHOLD=          # e.g. 256MB. Unset = DuckDB default (16MB). Raise under sustained ingest to reduce WAL checkpoint stalls; costs a larger WAL and longer restart replay.
 
 # Ingest admission gate (all telemetry ingest endpoints: /api/report, /api/profiles/ingest, /api/otel/*)
-INGEST_MAX_CONCURRENT=                # max concurrently processed ingest requests. Unset = 2×CPU cores, min 4. Bounds ingest memory so overload sheds load with 503s instead of the process being OOM-killed (on DuckDB an OOM death is followed by a minutes-long WAL-replay stall on restart).
+INGEST_MAX_CONCURRENT=                # max concurrently processed ingest requests. Unset = 2×CPU cores, min 4. Bounds ingest memory so overload sheds load with 503s instead of the process being OOM-killed (on DuckDB an OOM death is followed by a minutes-long WAL-replay stall on restart). The gate (`newAdmissionGate` in `middleware/ingest_admission.go`, a buffered-channel semaphore) also bounds waiters at 4×capacity (min 16); beyond that a request gets an immediate 503 instead of parking a goroutine and a timer for the wait window.
 INGEST_ADMISSION_WAIT_SECONDS=5       # how long a request may wait for a slot before the 503 + Retry-After; 0 = reject immediately when saturated
 
 # Email
@@ -574,10 +578,12 @@ backend/
 | PostgreSQL CRUD (read) | `UseAppAuth, RequireProjectAccess, Transactional` |
 | PostgreSQL CRUD (write) | `UseAppAuth, RequireProjectAccess, RequireWriteAccess, Transactional` |
 | Admin org management | `UseAppAuth, RequireAdminAccess, Transactional` |
-| Public (auth/invitations) | `Transactional` only |
+| Public (auth/invitations) | `RateLimitPerIP`, `BufferAuthBody`, `Transactional` (limiter first so a throttled request never reads a body or opens a transaction) |
 | Client SDK ingestion | `CORSReport, UseClientAuth, UseGzip` |
 | Synthetic runner API | `UseRunnerAuth` only (shared SYNTHETICS_RUNNER_SECRET bearer + self-registration by X-Traceway-Runner-Name; no Transactional — poll holds the request up to 25s) |
 | Public status page | `RateLimitPerIP` only |
+
+**Global middleware** (registered in `cmd/run.go` ahead of the routes): `middleware.GuardBodyReads` (every request body gets the progress guard, 30s idle / 10 min total / 1 KB/s floor after 20s, answering through `middleware.BodyReadError` as 408; routes with their own budget call `GuardBodyRead` again, which re-arms the same guard rather than wrapping twice, so uploads get 30s/30 min, `/api/report` 20s/5 min and OTLP 20s/2 min. The guard clears the socket read deadline the moment the body is complete: Go's background connection read would otherwise time out and cancel the request context of any handler that outlives the idle window. The `http.Server` `ReadTimeout` is a 1h backstop that only applies while a body is still arriving, `ReadHeaderTimeout` is 15s), `configureClientIP` (gin's trusted proxies from `Cfg.TrustedProxyList`, plus `TrustedPlatform` from `TRUSTED_PROXY_HEADER`; a malformed list panics), `warnOnUntrustedForwardedFor` (list mode only: one-time log when a forwarding header arrives from a peer outside `TRUSTED_PROXIES`), and `middleware.SecurityHeaders` (`X-Frame-Options: DENY`, CSP `frame-ancestors 'none'; base-uri 'self'; form-action 'self'`, `Referrer-Policy`, `nosniff`). The two frame headers are skipped for any `/status/*` or `/api/status/*` path so public status pages stay embeddable in an iframe. A status page served at the root of a custom domain is not exempt: the same root serves the logged-in dashboard on every hostname the backend answers on, so it must not be frameable there.
 
 ### API Endpoints
 
@@ -604,8 +610,8 @@ backend/
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
 | POST | `/api/auth/device/authorize` | None | Start device flow; returns device/user code + verification URL |
-| POST | `/api/auth/device/token` | None | Poll for the token (grant `device_code`); also accepts `refresh_token` |
-| POST | `/api/auth/token` | None | Token endpoint: `device_code` or `refresh_token` grant (JSON or form-encoded) |
+| POST | `/api/auth/device/token` | None | Poll for the token (grant `device_code`); also accepts `refresh_token`. Shares a 60/min per-IP limiter with `/api/auth/token`; over it a `device_code` grant answers the RFC 8628 `400 slow_down` (`RateLimitOAuthTokenPerIP` peeks `grant_type` from the buffered body), so the shipped CLI backs off instead of aborting the login, while every other grant gets a plain `429` + `Retry-After` because `slow_down` is undefined for them and OAuth clients treat an unknown 400 as terminal. Body capped at 64KB by `BufferAuthBody` like the other anonymous auth routes |
+| POST | `/api/auth/token` | None | Token endpoint: `device_code`, `refresh_token` or `authorization_code` grant (JSON or form-encoded). Same shared limiter, grant-aware rejection and 64KB body cap as the device token route |
 | POST | `/api/auth/logout` | None | Revoke the presented refresh token's family (idempotent) |
 | GET | `/api/device` | App | Look up a user code for the approval screen |
 | POST | `/api/device/approve` | App | Approve a pending device authorization (tokens carry only the approving user's own role, so no write guard) |
@@ -645,7 +651,7 @@ backend/
 | GET | `/api/metrics/application` | App | Application metrics |
 | GET | `/api/metrics/stats` | App | Stats metrics |
 | GET | `/api/metrics/server` | App | Server metrics |
-| POST | `/api/metrics/query` | App | Custom metric queries |
+| POST | `/api/metrics/query` | App | Custom metric queries. Bounded in `metric_query.controller.go`: 256KB body, max 50 queries and 20 tag filters each, range at most 731 days and `to > from` (422), buckets widened so no series exceeds 2000 points, at most 200 groups per query (the repositories return one extra so the result carries `truncatedGroups: true`), and a 30s deadline for the whole request that answers 504. The discovery endpoints validate their `from`/`to` the same way |
 | GET | `/api/metrics/discover` | App | Discover available metrics |
 | GET | `/api/metrics/discover/tags` | App | Discover metric tags |
 | GET | `/api/metrics/discover/instances` | App | Distinct `server_name` values in a range (dashboard instance filter) |

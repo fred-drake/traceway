@@ -36,6 +36,8 @@ type ExceptionSearchRequest struct {
 	IncludeArchived bool             `json:"includeArchived"`
 }
 
+const maxBulkIssueHashes = 100
+
 type ArchiveRequest struct {
 	Hashes []string `json:"hashes"`
 	// ResolvePages also resolves any unresolved on-call pages that were opened
@@ -218,14 +220,20 @@ func (e exceptionStackTraceController) ArchiveExceptions(c *gin.Context) {
 		return
 	}
 
+	limitJSONBody(c)
+
 	var request ArchiveRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
 	if len(request.Hashes) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "hashes array is required"})
+		return
+	}
+	if len(request.Hashes) > maxBulkIssueHashes {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("a maximum of %d issues can be archived at once", maxBulkIssueHashes)})
 		return
 	}
 
@@ -274,14 +282,20 @@ func (e exceptionStackTraceController) UnarchiveExceptions(c *gin.Context) {
 		return
 	}
 
+	limitJSONBody(c)
+
 	var request ArchiveRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
 	if len(request.Hashes) == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "hashes array is required"})
+		return
+	}
+	if len(request.Hashes) > maxBulkIssueHashes {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("a maximum of %d issues can be unarchived at once", maxBulkIssueHashes)})
 		return
 	}
 

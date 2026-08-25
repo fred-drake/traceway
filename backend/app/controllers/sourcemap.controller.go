@@ -24,10 +24,10 @@ func (s sourceMapController) Upload(c *gin.Context) {
 		return
 	}
 
-	if err := c.Request.ParseMultipartForm(50 << 20); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to parse multipart form"})
+	if !parseMultipartCapped(c, maxUploadBytes, uploadMultipartMemory) {
 		return
 	}
+	defer c.Request.MultipartForm.RemoveAll()
 
 	files := c.Request.MultipartForm.File["files"]
 	if len(files) == 0 {

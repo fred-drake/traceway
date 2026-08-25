@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/tracewayapp/traceway/backend/app/backfill"
@@ -182,9 +184,15 @@ func Run(opts ...Option) {
 		router = gin.Default()
 	}
 
+	router.Use(middleware.GuardBodyReads(middleware.DefaultBodyIdle, middleware.DefaultBodyTotal))
+
 	if err := configureClientIP(router, cfg); err != nil {
 		panic(fmt.Errorf("invalid TRUSTED_PROXIES: %w", err))
 	}
+	if cfg.TrustedProxyHeader == "" {
+		router.Use(warnOnUntrustedForwardedFor(cfg.TrustedProxyList()))
+	}
+	router.Use(middleware.SecurityHeaders)
 
 	if monitoringTracewayUrl := cfg.MonitoringTracewayURL; monitoringTracewayUrl != "" {
 		twmw := tracewaygin.New(
@@ -282,16 +290,82 @@ func Run(opts ...Option) {
 
 				port := ":" + portsList[i]
 				config.Logln("Starting server on " + port)
-				if err := router.Run(port); err != nil {
-					panic(fmt.Errorf("Error starting server on port %s: %v", port, err))
-				}
+				serveHTTP(router, port)
 			}()
 		}
 	}
 
 	notifySystemd()
-	if err := router.Run(":" + portsList[0]); err != nil {
-		panic(fmt.Errorf("Error starting server on port %s: %v", portsList[0], err))
+	serveHTTP(router, ":"+portsList[0])
+}
+
+func warnOnUntrustedForwardedFor(proxies []string) gin.HandlerFunc {
+	detect := newUntrustedForwarderDetector(proxies)
+	return func(c *gin.Context) {
+		if peer, first := detect(c); first {
+			config.Logf("X-Forwarded-For received from %s, which is not in TRUSTED_PROXIES. The header is ignored, so per-IP rate limits and session client IPs see that address instead of the real client. If %s is your proxy or CDN, add its range to TRUSTED_PROXIES.", peer, peer)
+		}
+		c.Next()
+	}
+}
+
+func newUntrustedForwarderDetector(proxies []string) func(*gin.Context) (string, bool) {
+	nets := trustedProxyNets(proxies)
+	var once sync.Once
+	return func(c *gin.Context) (string, bool) {
+		if c.GetHeader("X-Forwarded-For") == "" && c.GetHeader("X-Real-IP") == "" {
+			return "", false
+		}
+		peer := c.RemoteIP()
+		ip := net.ParseIP(peer)
+		if ip == nil || containsIP(nets, ip) {
+			return "", false
+		}
+		first := false
+		once.Do(func() { first = true })
+		return peer, first
+	}
+}
+
+func trustedProxyNets(proxies []string) []*net.IPNet {
+	var nets []*net.IPNet
+	for _, p := range proxies {
+		if _, n, err := net.ParseCIDR(p); err == nil {
+			nets = append(nets, n)
+			continue
+		}
+		if ip := net.ParseIP(p); ip != nil {
+			bits := 32
+			if ip.To4() == nil {
+				bits = 128
+			}
+			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		}
+	}
+	return nets
+}
+
+func containsIP(nets []*net.IPNet, ip net.IP) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+const serverReadTimeout = time.Hour
+
+func serveHTTP(router *gin.Engine, port string) {
+	srv := &http.Server{
+		Addr:              port,
+		Handler:           router,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       serverReadTimeout,
+		IdleTimeout:       2 * time.Minute,
+	}
+	if err := srv.ListenAndServe(); err != nil {
+		panic(fmt.Errorf("Error starting server on port %s: %v", port, err))
 	}
 }
 
@@ -340,6 +414,7 @@ func applyEnvOverrides(cfg *config.Cfg) {
 		{"TWILIO_FROM_NUMBER", &cfg.TwilioFromNumber},
 		{"TWILIO_MESSAGING_SERVICE_SID", &cfg.TwilioMessagingServiceSID},
 		{"ALLOW_PRIVATE_NOTIFICATION_TARGETS", &cfg.AllowPrivateNotificationTargets},
+		{"REPORT_MAX_BODY_MB", &cfg.ReportMaxBodyMB},
 		{"OAUTH_SESSION_SECRET", &cfg.OAuthSessionSecret},
 		{"GOOGLE_CLIENT_ID", &cfg.GoogleClientID},
 		{"GOOGLE_CLIENT_SECRET", &cfg.GoogleClientSecret},

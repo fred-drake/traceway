@@ -22,21 +22,41 @@ import (
 // a connection; a request that cannot get a slot within the wait window is
 // rejected with 503 + Retry-After, which SDKs and OTLP collectors retry.
 func newIngestAdmission(capacity int, wait time.Duration) gin.HandlerFunc {
+	return newAdmissionGate(capacity, wait, "ingest saturated, retry later", db.RecordIngestRejected)
+}
+
+func newAdmissionGate(capacity int, wait time.Duration, message string, onReject func()) gin.HandlerFunc {
 	slots := make(chan struct{}, capacity)
+	waiters := make(chan struct{}, max(4*capacity, 16))
+	reject := func(c *gin.Context) {
+		if onReject != nil {
+			onReject()
+		}
+		c.Header("Retry-After", "2")
+		c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": message})
+	}
 	return func(c *gin.Context) {
 		select {
 		case slots <- struct{}{}:
 		default:
+			select {
+			case waiters <- struct{}{}:
+			default:
+				reject(c)
+				return
+			}
 			timer := time.NewTimer(wait)
-			defer timer.Stop()
 			select {
 			case slots <- struct{}{}:
+				<-waiters
+				timer.Stop()
 			case <-timer.C:
-				db.RecordIngestRejected()
-				c.Header("Retry-After", "2")
-				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{"error": "ingest saturated, retry later"})
+				<-waiters
+				reject(c)
 				return
 			case <-c.Request.Context().Done():
+				<-waiters
+				timer.Stop()
 				c.Abort()
 				return
 			}
@@ -77,4 +97,22 @@ var ingestAdmission = sync.OnceValue(func() gin.HandlerFunc {
 
 func IngestAdmission(c *gin.Context) {
 	ingestAdmission()(c)
+}
+
+var uploadAdmission = sync.OnceValue(func() gin.HandlerFunc {
+	return newAdmissionGate(uploadCapacityFromEnv(), 30*time.Second, "upload queue saturated, retry later", nil)
+})
+
+func uploadCapacityFromEnv() int {
+	n := 4
+	if v := os.Getenv("UPLOAD_MAX_CONCURRENT"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil && parsed > 0 {
+			n = parsed
+		}
+	}
+	return n
+}
+
+func UploadAdmission(c *gin.Context) {
+	uploadAdmission()(c)
 }

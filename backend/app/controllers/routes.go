@@ -177,8 +177,8 @@ func RegisterControllers(router *gin.RouterGroup) {
 	router.POST("/exception-stack-traces/:hash", middleware.UseAppAuth, middleware.RequireProjectAccess, ExceptionStackTraceController.FindByHash)
 
 	// Keep the limiter before Transactional so rejected requests don't open a transaction.
-	router.POST("/login", middleware.RateLimitPerIP(10, time.Minute), middleware.Transactional, AuthController.Login)
-	router.POST("/register", middleware.RateLimitPerIP(10, time.Minute), middleware.Transactional, AuthController.Register)
+	router.POST("/login", middleware.RateLimitPerIP(10, time.Minute), middleware.BufferAuthBody, middleware.Transactional, AuthController.Login)
+	router.POST("/register", middleware.RateLimitPerIP(10, time.Minute), middleware.BufferAuthBody, middleware.Transactional, AuthController.Register)
 	router.GET("/me/login-bundle", middleware.UseAppAuth, middleware.Transactional, AuthController.LoginBundle)
 
 	router.GET("/auth/providers", OAuthController.ListProviders)
@@ -186,18 +186,18 @@ func RegisterControllers(router *gin.RouterGroup) {
 	router.GET("/auth/callback/:provider", middleware.RateLimitPerIP(20, time.Minute), middleware.Transactional, OAuthController.Callback)
 	router.POST("/auth/finish-setup", middleware.UseAppAuth, middleware.Transactional, OAuthController.FinishSetup)
 
-	router.Match(postPreflight, "/auth/device/authorize", middleware.OAuthCors, middleware.RateLimitPerIP(10, time.Minute), DeviceAuthController.Authorize)
+	router.Match(postPreflight, "/auth/device/authorize", middleware.OAuthCors, middleware.RateLimitPerIP(10, time.Minute), middleware.BufferAuthBody, DeviceAuthController.Authorize)
 	// One shared limiter instance so both token routes draw from the same budget;
 	// slightly higher 60/min limit to leave headroom for concurrent device flow polling behind NAT
-	tokenRateLimit := middleware.RateLimitPerIP(60, time.Minute)
-	router.Match(postPreflight, "/auth/device/token", middleware.OAuthCors, tokenRateLimit, DeviceAuthController.Token)
-	router.Match(postPreflight, "/auth/token", middleware.OAuthCors, tokenRateLimit, DeviceAuthController.Token)
-	router.Match(postPreflight, "/auth/logout", middleware.OAuthCors, middleware.RateLimitPerIP(20, time.Minute), DeviceAuthController.Logout)
+	tokenRateLimit := middleware.RateLimitOAuthTokenPerIP(60, time.Minute)
+	router.Match(postPreflight, "/auth/device/token", middleware.OAuthCors, tokenRateLimit, middleware.BufferAuthBody, DeviceAuthController.Token)
+	router.Match(postPreflight, "/auth/token", middleware.OAuthCors, tokenRateLimit, middleware.BufferAuthBody, DeviceAuthController.Token)
+	router.Match(postPreflight, "/auth/logout", middleware.OAuthCors, middleware.RateLimitPerIP(20, time.Minute), middleware.BufferAuthBody, DeviceAuthController.Logout)
 	router.GET("/device", middleware.UseAppAuth, DeviceAuthController.Lookup)
 	router.POST("/device/approve", middleware.UseAppAuth, middleware.Transactional, DeviceAuthController.Approve)
 	router.POST("/device/deny", middleware.UseAppAuth, middleware.Transactional, DeviceAuthController.Deny)
 
-	router.Match(postPreflight, "/oauth/register", middleware.OAuthCors, middleware.RateLimitPerIP(10, time.Minute), middleware.Transactional, OauthAuthorizeController.Register)
+	router.Match(postPreflight, "/oauth/register", middleware.OAuthCors, middleware.RateLimitPerIP(10, time.Minute), middleware.BufferAuthBody, middleware.Transactional, OauthAuthorizeController.Register)
 	router.GET("/oauth/client", middleware.UseAppAuth, OauthAuthorizeController.Lookup)
 	router.POST("/oauth/approve", middleware.UseAppAuth, middleware.Transactional, OauthAuthorizeController.Approve)
 	router.POST("/oauth/deny", middleware.UseAppAuth, OauthAuthorizeController.Deny)
@@ -223,9 +223,9 @@ func RegisterControllers(router *gin.RouterGroup) {
 	}
 
 	// slightly tighter limit since every accepted request sends an email
-	router.POST("/forgot-password", middleware.RateLimitPerIP(5, time.Minute), middleware.Transactional, PasswordResetController.ForgotPassword)
+	router.POST("/forgot-password", middleware.RateLimitPerIP(5, time.Minute), middleware.BufferAuthBody, middleware.Transactional, PasswordResetController.ForgotPassword)
 	router.GET("/password-reset/:token", middleware.RateLimitPerIP(30, time.Minute), PasswordResetController.ValidateToken)
-	router.POST("/password-reset/:token", middleware.RateLimitPerIP(10, time.Minute), middleware.Transactional, PasswordResetController.ResetPassword)
+	router.POST("/password-reset/:token", middleware.RateLimitPerIP(10, time.Minute), middleware.BufferAuthBody, middleware.Transactional, PasswordResetController.ResetPassword)
 
 	router.GET("/organizations/:organizationId/settings", middleware.UseAppAuth, middleware.RequireAdminAccess, OrganizationController.GetSettings)
 	router.PUT("/organizations/:organizationId/settings", middleware.UseAppAuth, middleware.RequireAdminAccess, middleware.Transactional, OrganizationController.UpdateSettings)
@@ -241,12 +241,12 @@ func RegisterControllers(router *gin.RouterGroup) {
 	router.DELETE("/organizations/:organizationId/invitations/:id", middleware.UseAppAuth, middleware.RequireAdminAccess, middleware.Transactional, InvitationController.RevokeInvitation)
 
 	router.GET("/invitations/:token", middleware.RateLimitPerIP(30, time.Minute), InvitationController.GetInvitationInfo)
-	router.POST("/invitations/:token/accept", middleware.RateLimitPerIP(10, time.Minute), middleware.Transactional, InvitationController.AcceptInvitation)
+	router.POST("/invitations/:token/accept", middleware.RateLimitPerIP(10, time.Minute), middleware.BufferAuthBody, middleware.Transactional, InvitationController.AcceptInvitation)
 	router.POST("/invitations/:token/accept-existing", middleware.UseAppAuth, middleware.Transactional, InvitationController.AcceptExistingUser)
 
 	router.POST("/projects/source-map-token", middleware.UseAppAuth, middleware.RequireProjectAccess, middleware.RequireWriteAccess, ProjectController.GenerateSourceMapToken)
-	router.POST("/sourcemaps/upload", middleware.UseSourceMapAuth, SourceMapController.Upload)
-	router.POST("/symbols/upload", middleware.UseSourceMapAuth, SymbolsController.Upload)
+	router.POST("/sourcemaps/upload", middleware.UseSourceMapAuth, middleware.UploadAdmission, SourceMapController.Upload)
+	router.POST("/symbols/upload", middleware.UseSourceMapAuth, middleware.UploadAdmission, SymbolsController.Upload)
 
 	router.GET("/notification-channels", middleware.UseAppAuth, middleware.RequireProjectAccess, middleware.Transactional, NotificationChannelController.List)
 	router.POST("/notification-channels", middleware.UseAppAuth, middleware.RequireProjectAccess, middleware.RequireWriteAccess, middleware.Transactional, NotificationChannelController.Create)

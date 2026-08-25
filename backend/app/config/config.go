@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -84,6 +85,8 @@ type Cfg struct {
 	SMTPFrom     string
 
 	AppBaseURL            string
+	TrustedProxies        string
+	TrustedProxyHeader    string
 	EmailPreviewEnabled   string
 	CloudMode             string
 	MonitoringTracewayURL string
@@ -134,6 +137,26 @@ func PollSeconds(value string, defaultSeconds int) time.Duration {
 // registration, and the password-reset flow.
 func (c *Cfg) PasswordLoginDisabled() bool {
 	return c.DisablePasswordLogin == "true"
+}
+
+// TrustedProxyList returns the proxy IPs/CIDRs whose X-Forwarded-For gin may
+// trust when resolving c.ClientIP() for per-IP rate limiters.
+// Defaults to loopback so a direct client can't spoof a bypass
+func (c *Cfg) TrustedProxyList() []string {
+	raw := strings.TrimSpace(c.TrustedProxies)
+	if raw == "" {
+		return []string{"127.0.0.1", "::1"}
+	}
+	if raw == "*" {
+		return []string{"0.0.0.0/0", "::/0"}
+	}
+	var proxies []string
+	for _, p := range strings.Split(raw, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			proxies = append(proxies, p)
+		}
+	}
+	return proxies
 }
 
 // TwilioEnabled reports whether SMS sending is configured: account credentials
@@ -222,6 +245,8 @@ func LoadFromEnv() *Cfg {
 		SMTPFrom:     os.Getenv("SMTP_FROM"),
 
 		AppBaseURL:            os.Getenv("APP_BASE_URL"),
+		TrustedProxies:        os.Getenv("TRUSTED_PROXIES"),
+		TrustedProxyHeader:    os.Getenv("TRUSTED_PROXY_HEADER"),
 		EmailPreviewEnabled:   os.Getenv("EMAIL_PREVIEW_ENABLED"),
 		CloudMode:             os.Getenv("CLOUD_MODE"),
 		MonitoringTracewayURL: os.Getenv("MONITORING_TRACEWAY_URL"),

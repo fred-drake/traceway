@@ -64,15 +64,11 @@ func isMaxBytes(err error) bool {
 }
 
 func writeDecodeError(c *gin.Context, err error) {
-	if status, message, ok := middleware.BodyReadError(err); ok {
-		c.JSON(status, gin.H{"error": message})
+	if errors.Is(err, errBodyTooLarge) {
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
 		return
 	}
-	status := http.StatusBadRequest
-	if errors.Is(err, errBodyTooLarge) {
-		status = http.StatusRequestEntityTooLarge
-	}
-	c.JSON(status, gin.H{"error": err.Error()})
+	middleware.RejectIngestBindError(c, err, err.Error())
 }
 
 func isProtobuf(c *gin.Context) bool {

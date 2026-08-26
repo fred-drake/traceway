@@ -109,11 +109,10 @@ func runMetricsQuery(cmd *cobra.Command, _ []string) error {
 				if len(pts) > 0 {
 					latest = fmt.Sprintf("%g", pts[len(pts)-1].Value)
 				}
-				cell := group
-				if r.TruncatedGroups {
-					cell += " (truncated)"
-				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", r.Name, pickStr(r.Unit, "-"), cell, len(pts), latest)
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", r.Name, pickStr(r.Unit, "-"), group, len(pts), latest)
+			}
+			if r.TruncatedGroups {
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t(more groups not shown)\t-\t-\n", r.Name, pickStr(r.Unit, "-"))
 			}
 		}
 		return tw.Flush()

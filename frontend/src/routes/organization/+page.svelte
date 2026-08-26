@@ -52,7 +52,6 @@
 	const redirectHref = $derived.by(() => {
 		if (currentOrganizationId === null) return null;
 		if (organizationProjects.length === 1) return `/?projectId=${organizationProjects[0].id}`;
-		if (organizationProjects.length === 0) return '/setup';
 		return null;
 	});
 
@@ -126,6 +125,8 @@
 
 		{#if currentOrganizationId === null}
 			<EmptyState message="You are not a member of any organization yet." />
+		{:else if organizationProjects.length === 0}
+			<EmptyState message="This organization has no projects yet." />
 		{:else if activeTab === 'overview'}
 			<OverviewTab organizationId={currentOrganizationId} {hasBackendProjects} />
 		{:else if activeTab === 'issues'}

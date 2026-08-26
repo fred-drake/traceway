@@ -38,10 +38,17 @@ type progressBody struct {
 	lastSet  time.Time
 	start    time.Time
 	read     int64
+	started  bool
 	done     bool
 }
 
 func (p *progressBody) Read(b []byte) (int, error) {
+	// The clock starts at the first read: everything before it (auth, a
+	// queued main-DB transaction) is the server's time, not the client's.
+	if !p.started {
+		p.started = true
+		p.restart(time.Now(), p.idle, p.total)
+	}
 	n, err := p.rc.Read(b)
 	if errors.Is(err, os.ErrDeadlineExceeded) {
 		err = ErrBodyTimedOut

@@ -3,6 +3,7 @@ package middleware
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math"
 	"net/http"
@@ -74,7 +75,7 @@ func rejectRateLimited(c *gin.Context, retryAfter time.Duration) {
 		seconds = 1
 	}
 	c.Header("Retry-After", strconv.Itoa(seconds))
-	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": "slow_down"})
+	c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("Too many requests, try again in %ds", seconds)})
 }
 
 func rateLimitWithKey(maxRequests int, window time.Duration, keyOf func(c *gin.Context) string) gin.HandlerFunc {

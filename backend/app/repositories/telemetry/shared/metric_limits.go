@@ -1,5 +1,7 @@
 package shared
 
+import "strings"
+
 const MaxTimeSeriesBuckets = 2000
 
 func TimeSeriesRowLimit(maxGroups int) int {
@@ -18,4 +20,12 @@ func GroupCapReached[T any](result map[string][]T, groupKey string, maxGroups in
 	}
 	result[groupKey] = nil
 	return true
+}
+
+// GroupKeySeparator joins the tag values of a QueryTimeSeriesByTags result key.
+// A control character, so no tag value can be mistaken for a boundary.
+const GroupKeySeparator = "\x1f"
+
+func SplitGroupKey(key string) []string {
+	return strings.Split(key, GroupKeySeparator)
 }

@@ -71,8 +71,8 @@ func validateMetricQuery(req *MetricQueryRequest) string {
 }
 
 func validateMetricRange(from, to time.Time) string {
-	if !to.After(from) {
-		return "to must be after from"
+	if to.Before(from) {
+		return "to must not be before from"
 	}
 	if to.Sub(from) > metricQueryMaxRange {
 		return fmt.Sprintf("the time range must be at most %d days", int(metricQueryMaxRange.Hours()/24))
@@ -136,7 +136,7 @@ func (c *metricQueryController) Query(ctx *gin.Context) {
 		return
 	}
 
-	queryCtx, cancel := context.WithTimeout(ctx, metricQueryTimeout)
+	queryCtx, cancel := context.WithTimeout(ctx.Request.Context(), metricQueryTimeout)
 	defer cancel()
 
 	unitMap := make(map[string]string)

@@ -50,6 +50,7 @@
 	let singleValue = $state<number | null>(null);
 	let resolvedUnit = $state('');
 	let truncated = $state(false);
+	let rangeError = $state('');
 	let loadSequence = 0;
 
 	const colors = [
@@ -142,6 +143,7 @@
 			);
 			if (sequence !== loadSequence) return;
 			truncated = response.results.some((r) => r.truncatedGroups);
+			rangeError = '';
 
 			const units = new SvelteSet<string>();
 			const usedKeys = new SvelteSet<string>();
@@ -174,9 +176,10 @@
 				const aggregation = widget.config.sources?.[0]?.aggregation || 'avg';
 				singleValue = newSeries.length > 0 ? reduceSeries(newSeries[0].data, aggregation) : null;
 			}
-		} catch {
+		} catch (e) {
 			if (sequence !== loadSequence) return;
 			// Retain the last successful snapshot during transient query failures.
+			rangeError = (e as { status?: number }).status === 422 ? (e as Error).message : '';
 		} finally {
 			if (sequence === loadSequence) loading = false;
 		}
@@ -373,5 +376,8 @@
 
 	{#if truncated && !loading}
 		<div class="px-2 pt-1 text-xs text-muted-foreground">Showing the first 200 groups</div>
+	{/if}
+	{#if rangeError && !loading}
+		<div class="px-2 pt-1 text-xs text-destructive">{rangeError}</div>
 	{/if}
 </div>

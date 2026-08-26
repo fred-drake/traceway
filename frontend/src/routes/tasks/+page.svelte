@@ -53,6 +53,7 @@
 
 	let tasks = $state<TaskStats[]>([]);
 	let loading = $state(true);
+	let loadSequence = 0;
 	let error = $state('');
 
 	// Pagination State
@@ -164,6 +165,7 @@
 	}
 
 	async function loadData(pushToHistory = true) {
+		const sequence = ++loadSequence;
 		loading = true;
 		error = '';
 
@@ -195,15 +197,17 @@
 			const response = await api.post('/tasks/grouped', requestBody, {
 				projectId: projectsState.currentProjectId ?? undefined
 			});
+			if (sequence !== loadSequence) return;
 
 			tasks = response.data || [];
 			total = response.pagination.total;
 			totalPages = response.pagination.totalPages;
 		} catch (e) {
+			if (sequence !== loadSequence) return;
 			console.error(e);
 			error = getErrorMessage(e) || 'Failed to load data';
 		} finally {
-			loading = false;
+			if (sequence === loadSequence) loading = false;
 		}
 	}
 

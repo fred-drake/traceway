@@ -96,6 +96,8 @@
 
 	let endpoints = $state<EndpointStats[]>([]);
 	let loading = $state(true);
+	let loadSequence = 0;
+	let chartSequence = 0;
 	let error = $state('');
 
 	// Chart state
@@ -258,6 +260,7 @@
 	}
 
 	async function loadChartData() {
+		const sequence = ++chartSequence;
 		chartLoading = true;
 
 		try {
@@ -276,6 +279,7 @@
 				},
 				{ projectId: projectsState.currentProjectId ?? undefined }
 			)) as ChartResponse;
+			if (sequence !== chartSequence) return;
 
 			chartEndpoints = response.endpoints || [];
 			chartSeries = (response.series || []).map(
@@ -286,15 +290,17 @@
 				})
 			);
 		} catch (e) {
+			if (sequence !== chartSequence) return;
 			console.error('Failed to load chart data:', e);
 			chartEndpoints = [];
 			chartSeries = [];
 		} finally {
-			chartLoading = false;
+			if (sequence === chartSequence) chartLoading = false;
 		}
 	}
 
 	async function loadData(pushToHistory = true) {
+		const sequence = ++loadSequence;
 		loading = true;
 		error = '';
 
@@ -325,15 +331,17 @@
 			const response = await api.post('/endpoints/grouped', requestBody, {
 				projectId: projectsState.currentProjectId ?? undefined
 			});
+			if (sequence !== loadSequence) return;
 
 			endpoints = response.data || [];
 			total = response.pagination.total;
 			totalPages = response.pagination.totalPages;
 		} catch (e) {
+			if (sequence !== loadSequence) return;
 			console.error(e);
 			error = getErrorMessage(e) || 'Failed to load data';
 		} finally {
-			loading = false;
+			if (sequence === loadSequence) loading = false;
 		}
 
 		// Also load chart data

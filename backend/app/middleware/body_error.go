@@ -26,3 +26,18 @@ func RejectBindError(c *gin.Context, err error, fallback string) {
 	}
 	c.JSON(status, gin.H{"error": message})
 }
+
+// OTLP exporters retry a 503 but treat a 408 as permanent and drop the batch,
+// so a stalled ingest body is turned away as retryable. The Traceway SDKs
+// re-queue a failed batch whatever the status, so this changes nothing for them.
+func RejectIngestBindError(c *gin.Context, err error, fallback string) {
+	status, message, ok := BodyReadError(err)
+	if !ok {
+		status, message = http.StatusBadRequest, fallback
+	}
+	if status == http.StatusRequestTimeout {
+		status = http.StatusServiceUnavailable
+		c.Header("Retry-After", "2")
+	}
+	c.JSON(status, gin.H{"error": message})
+}

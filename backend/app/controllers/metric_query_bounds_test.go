@@ -51,7 +51,7 @@ func TestValidateMetricQueryBounds(t *testing.T) {
 		{"ordinary range", MetricQueryRequest{Queries: one, From: base, To: base.Add(time.Hour)}, false},
 		{"at the range cap", MetricQueryRequest{Queries: one, From: base, To: base.Add(metricQueryMaxRange)}, false},
 		{"reversed", MetricQueryRequest{Queries: one, From: base.Add(time.Hour), To: base}, true},
-		{"equal", MetricQueryRequest{Queries: one, From: base, To: base}, true},
+		{"equal", MetricQueryRequest{Queries: one, From: base, To: base}, false},
 		{"over the range cap", MetricQueryRequest{Queries: one, From: base, To: base.Add(metricQueryMaxRange + time.Hour)}, true},
 		{"absurd timestamps", MetricQueryRequest{Queries: one, From: time.Date(1, 1, 1, 0, 0, 0, 0, time.UTC), To: time.Date(9999, 1, 1, 0, 0, 0, 0, time.UTC)}, true},
 		{"too many tag filters", MetricQueryRequest{Queries: []MetricQueryItem{{Name: "cpu", TagFilters: manyFilters}}, From: base, To: base.Add(time.Hour)}, true},

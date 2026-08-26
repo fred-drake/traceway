@@ -85,3 +85,34 @@ func TestRejectBindError(t *testing.T) {
 		})
 	}
 }
+
+func TestRejectIngestBindError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	cases := []struct {
+		name           string
+		err            error
+		wantStatus     int
+		wantRetryAfter string
+	}{
+		{"body too slow becomes retryable", ErrBodyTooSlow, http.StatusServiceUnavailable, "2"},
+		{"read deadline becomes retryable", ErrBodyTimedOut, http.StatusServiceUnavailable, "2"},
+		{"max bytes stays 413", &http.MaxBytesError{Limit: 64}, http.StatusRequestEntityTooLarge, ""},
+		{"plain bind error stays 400", errors.New("bad json"), http.StatusBadRequest, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(rec)
+			c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+
+			RejectIngestBindError(c, tc.err, "Invalid request body")
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (body %q)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			if got := rec.Header().Get("Retry-After"); got != tc.wantRetryAfter {
+				t.Fatalf("Retry-After = %q, want %q", got, tc.wantRetryAfter)
+			}
+		})
+	}
+}

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tracewayapp/traceway/backend/app/models"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry/shared"
 )
 
 func TestMetricPointRepository_InsertAndQueryTimeSeries(t *testing.T) {
@@ -528,5 +529,67 @@ func TestMetricPointRepository_QueryTimeSeries_LastPerDeviceWithServerFilter(t *
 	assertApproxEqual(t, "lo bucket 1", lo[1].Value, 20, 0.1)
 	if gap := eth0[1].Timestamp.Sub(eth0[0].Timestamp); gap != time.Minute {
 		t.Fatalf("bucket gap = %v, want 1m", gap)
+	}
+}
+
+func TestMetricPointRepository_QueryTimeSeries_CompositeGroupBy(t *testing.T) {
+	setupTestDB(t)
+	ctx := context.Background()
+	projectId := uuid.New()
+	base := time.Now().UTC().Truncate(time.Hour)
+	tags := func(server, device string) map[string]string {
+		return map[string]string{"server_name": server, "device": device, "direction": "receive"}
+	}
+
+	points := []models.MetricPoint{
+		makeMetricPoint(projectId, "system.network.io", 1000, tags("web-1", "eth0"), base),
+		makeMetricPoint(projectId, "system.network.io", 2200, tags("web-1", "eth0"), base.Add(time.Minute)),
+		makeMetricPoint(projectId, "system.network.io", 10, tags("web-1", "lo"), base),
+		makeMetricPoint(projectId, "system.network.io", 20, tags("web-1", "lo"), base.Add(time.Minute)),
+		makeMetricPoint(projectId, "system.network.io", 500, tags("web-2", "eth0"), base),
+		makeMetricPoint(projectId, "system.network.io", 900, tags("web-2", "eth0"), base.Add(time.Minute)),
+	}
+	if err := MetricPointRepository.InsertAsync(ctx, points); err != nil {
+		t.Fatalf("InsertAsync failed: %v", err)
+	}
+
+	result, err := MetricPointRepository.QueryTimeSeriesByTags(ctx, projectId, "system.network.io", base.Add(-time.Minute), base.Add(2*time.Minute), 1, "last", map[string]string{"direction": "receive"}, []string{"device", "server_name"}, 0)
+	if err != nil {
+		t.Fatalf("QueryTimeSeriesByTags failed: %v", err)
+	}
+	sep := shared.GroupKeySeparator
+	want := map[string][2]float64{"eth0" + sep + "web-1": {1000, 2200}, "lo" + sep + "web-1": {10, 20}, "eth0" + sep + "web-2": {500, 900}}
+	if len(result) != len(want) {
+		t.Fatalf("expected one series per device and server, got %v", result)
+	}
+	for key, values := range want {
+		if len(result[key]) != 2 {
+			t.Fatalf("group %s: expected 2 buckets, got %d", key, len(result[key]))
+		}
+		assertApproxEqual(t, key+" bucket 0", result[key][0].Value, values[0], 0.1)
+		assertApproxEqual(t, key+" bucket 1", result[key][1].Value, values[1], 0.1)
+	}
+}
+
+func TestMetricPointRepository_QueryTimeSeries_GroupByKeyWithComma(t *testing.T) {
+	setupTestDB(t)
+	ctx := context.Background()
+	projectId := uuid.New()
+	base := time.Now().UTC().Truncate(time.Hour)
+
+	points := []models.MetricPoint{
+		makeMetricPoint(projectId, "cpu.used_pcnt", 50.0, map[string]string{"a,b": "x", "a": "wrong"}, base),
+		makeMetricPoint(projectId, "cpu.used_pcnt", 80.0, map[string]string{"a,b": "y", "a": "wrong"}, base),
+	}
+	if err := MetricPointRepository.InsertAsync(ctx, points); err != nil {
+		t.Fatalf("InsertAsync failed: %v", err)
+	}
+
+	result, err := MetricPointRepository.QueryTimeSeries(ctx, projectId, "cpu.used_pcnt", base.Add(-time.Minute), base.Add(time.Hour), 60, "avg", nil, "a,b", 0)
+	if err != nil {
+		t.Fatalf("QueryTimeSeries failed: %v", err)
+	}
+	if len(result) != 2 || len(result["x"]) != 1 || len(result["y"]) != 1 {
+		t.Fatalf("a comma in groupBy must name one tag key literally, got %v", result)
 	}
 }

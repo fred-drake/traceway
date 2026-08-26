@@ -26,7 +26,7 @@ func UseGzip(c *gin.Context) {
 
 const (
 	reportBodyIdle  = 20 * time.Second
-	reportBodyTotal = 5 * time.Minute
+	reportBodyTotal = DefaultBodyTotal
 )
 
 func useGzipLimited(c *gin.Context, maxBytes int64) {
@@ -46,7 +46,8 @@ func useGzipLimited(c *gin.Context, maxBytes int64) {
 
 	gzReader, err := gzip.NewReader(body)
 	if err != nil {
-		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid gzip"})
+		RejectIngestBindError(c, err, "Invalid gzip")
+		c.Abort()
 		return
 	}
 	c.Request.Body = http.MaxBytesReader(c.Writer, gzReader, maxBytes)

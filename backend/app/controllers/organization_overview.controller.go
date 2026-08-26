@@ -13,6 +13,7 @@ import (
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
 	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry/shared"
 	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 
 	"github.com/gin-gonic/gin"
@@ -159,16 +160,34 @@ func sumDeviceRates(series map[string][]models.TimeSeriesPoint) (float64, bool) 
 // system.network.io is a cumulative counter per device, so summing samples
 // inside a bucket (or across devices) makes the bucket delta meaningless. The
 // last sample per device per minute, differenced and then summed, is the rate.
-func loadNetworkRate(ctx context.Context, projectId uuid.UUID, serverName, direction string, since, to time.Time) (*float64, error) {
-	series, err := telemetry.MetricPointRepository.QueryTimeSeries(ctx, projectId, models.MetricNameSystemNetworkIO, since, to, 1, "last", map[string]string{"direction": direction, "server_name": serverName}, "device", 0)
+func loadNetworkRates(ctx context.Context, projectId uuid.UUID, direction string, since, to time.Time) (map[string]float64, error) {
+	series, err := telemetry.MetricPointRepository.QueryTimeSeriesByTags(ctx, projectId, models.MetricNameSystemNetworkIO, since, to, 1, "last", map[string]string{"direction": direction}, []string{"device", "server_name"}, 0)
 	if err != nil {
 		return nil, err
 	}
-	rate, ok := sumDeviceRates(series)
-	if !ok {
-		return nil, nil
+	return networkRatesByServer(series), nil
+}
+
+func networkRatesByServer(series map[string][]models.TimeSeriesPoint) map[string]float64 {
+	byServer := map[string]map[string][]models.TimeSeriesPoint{}
+	for key, points := range series {
+		parts := shared.SplitGroupKey(key)
+		if len(parts) != 2 {
+			continue
+		}
+		device, server := parts[0], parts[1]
+		if byServer[server] == nil {
+			byServer[server] = map[string][]models.TimeSeriesPoint{}
+		}
+		byServer[server][device] = points
 	}
-	return pointerTo(rate), nil
+	rates := make(map[string]float64, len(byServer))
+	for server, devices := range byServer {
+		if rate, ok := sumDeviceRates(devices); ok {
+			rates[server] = rate
+		}
+	}
+	return rates
 }
 
 func applyServerMetadata(row *orgServerRow, tags map[string]string) {
@@ -248,6 +267,14 @@ func loadProjectServerRows(ctx *gin.Context, project *models.Project, dashboardI
 			return nil, err
 		}
 		networkTo := now.Truncate(time.Minute).Add(-time.Millisecond)
+		receive, err := loadNetworkRates(ctx, project.Id, "receive", since, networkTo)
+		if err != nil {
+			return nil, err
+		}
+		transmit, err := loadNetworkRates(ctx, project.Id, "transmit", since, networkTo)
+		if err != nil {
+			return nil, err
+		}
 
 		for _, point := range latestOtel {
 			row := rows[point.ServerName]
@@ -261,11 +288,11 @@ func loadProjectServerRows(ctx *gin.Context, project *models.Project, dashboardI
 			if value, ok := lastSeriesValue(filesystemUsed, point.ServerName); ok {
 				row.DiskPct = pointerTo(otelFractionToPercent(value))
 			}
-			if row.NetworkRxBps, err = loadNetworkRate(ctx, project.Id, point.ServerName, "receive", since, networkTo); err != nil {
-				return nil, err
+			if rate, ok := receive[point.ServerName]; ok {
+				row.NetworkRxBps = pointerTo(rate)
 			}
-			if row.NetworkTxBps, err = loadNetworkRate(ctx, project.Id, point.ServerName, "transmit", since, networkTo); err != nil {
-				return nil, err
+			if rate, ok := transmit[point.ServerName]; ok {
+				row.NetworkTxBps = pointerTo(rate)
 			}
 		}
 	}

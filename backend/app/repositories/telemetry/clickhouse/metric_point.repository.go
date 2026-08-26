@@ -30,6 +30,20 @@ func (r *metricPointRepository) InsertAsync(ctx context.Context, points []models
 }
 
 func (r *metricPointRepository) QueryTimeSeries(ctx context.Context, projectId uuid.UUID, name string, from, to time.Time, intervalMinutes int, aggregation string, tagFilters map[string]string, groupBy string, maxGroups int) (map[string][]models.TimeSeriesPoint, error) {
+	var groupKeys []string
+	if groupBy != "" {
+		groupKeys = []string{groupBy}
+	}
+	return r.queryTimeSeries(ctx, projectId, name, from, to, intervalMinutes, aggregation, tagFilters, groupKeys, maxGroups)
+}
+
+// QueryTimeSeriesByTags groups by every tag in groupBy at once. Result keys are
+// the tag values in that order joined by shared.GroupKeySeparator.
+func (r *metricPointRepository) QueryTimeSeriesByTags(ctx context.Context, projectId uuid.UUID, name string, from, to time.Time, intervalMinutes int, aggregation string, tagFilters map[string]string, groupBy []string, maxGroups int) (map[string][]models.TimeSeriesPoint, error) {
+	return r.queryTimeSeries(ctx, projectId, name, from, to, intervalMinutes, aggregation, tagFilters, groupBy, maxGroups)
+}
+
+func (r *metricPointRepository) queryTimeSeries(ctx context.Context, projectId uuid.UUID, name string, from, to time.Time, intervalMinutes int, aggregation string, tagFilters map[string]string, groupKeys []string, maxGroups int) (map[string][]models.TimeSeriesPoint, error) {
 	table := selectTable(to.Sub(from))
 	if aggregation == "last" {
 		table = "metric_points"
@@ -41,10 +55,19 @@ func (r *metricPointRepository) QueryTimeSeries(ctx context.Context, projectId u
 
 	args := []interface{}{intervalMinutes}
 
-	hasGroupBy := groupBy != ""
+	hasGroupBy := len(groupKeys) > 0
 	if hasGroupBy {
-		query += ", tags[?] AS group_key"
-		args = append(args, groupBy)
+		for i, key := range groupKeys {
+			if i > 0 {
+				query += " || ? || "
+				args = append(args, shared.GroupKeySeparator)
+			} else {
+				query += ", "
+			}
+			query += "tags[?]"
+			args = append(args, key)
+		}
+		query += " AS group_key"
 	}
 
 	query += ", " + aggFunc + " AS agg_value FROM " + table + " WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?"
@@ -98,6 +121,9 @@ func (r *metricPointRepository) QueryTimeSeries(ctx context.Context, projectId u
 			Timestamp: bucket,
 			Value:     value,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

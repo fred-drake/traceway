@@ -22,6 +22,11 @@ const patTouchInterval = time.Minute
 
 func InitUseAppAuth() {
 	UseAppAuth = func(c *gin.Context) {
+		// Every dashboard route binds JSON that encoding/json buffers whole, so
+		// the body is capped once here rather than at each bind site.
+		if c.Request.Body != nil && c.Request.Body != http.NoBody {
+			c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxTransactionalBodyBytes)
+		}
 		authHeader := c.GetHeader("Authorization")
 
 		if !strings.HasPrefix(authHeader, "Bearer ") {

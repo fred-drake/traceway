@@ -69,14 +69,32 @@ func (r *metricPointRepository) InsertAsync(ctx context.Context, points []models
 }
 
 func (r *metricPointRepository) QueryTimeSeries(ctx context.Context, projectId uuid.UUID, name string, from, to time.Time, intervalMinutes int, aggregation string, tagFilters map[string]string, groupBy string, maxGroups int) (map[string][]models.TimeSeriesPoint, error) {
+	var groupKeys []string
+	if groupBy != "" {
+		groupKeys = []string{groupBy}
+	}
+	return r.queryTimeSeries(ctx, projectId, name, from, to, intervalMinutes, aggregation, tagFilters, groupKeys, maxGroups)
+}
+
+// QueryTimeSeriesByTags groups by every tag in groupBy at once. Result keys are
+// the tag values in that order joined by shared.GroupKeySeparator.
+func (r *metricPointRepository) QueryTimeSeriesByTags(ctx context.Context, projectId uuid.UUID, name string, from, to time.Time, intervalMinutes int, aggregation string, tagFilters map[string]string, groupBy []string, maxGroups int) (map[string][]models.TimeSeriesPoint, error) {
+	return r.queryTimeSeries(ctx, projectId, name, from, to, intervalMinutes, aggregation, tagFilters, groupBy, maxGroups)
+}
+
+func (r *metricPointRepository) queryTimeSeries(ctx context.Context, projectId uuid.UUID, name string, from, to time.Time, intervalMinutes int, aggregation string, tagFilters map[string]string, groupKeys []string, maxGroups int) (map[string][]models.TimeSeriesPoint, error) {
 	secs := intervalMinutes * 60
 	aggFunc := sqliteAggregationFunc(aggregation)
-	hasGroupBy := groupBy != ""
+	hasGroupBy := len(groupKeys) > 0
 	isLast := aggregation == "last"
 
 	selectClause := fmt.Sprintf("SELECT datetime((strftime('%%s', recorded_at) / %d) * %d, 'unixepoch') AS bucket", secs, secs)
 	if hasGroupBy {
-		selectClause += ", json_extract(tags, '$.\"' || :group_by || '\"') AS group_key"
+		exprs := make([]string, len(groupKeys))
+		for i := range groupKeys {
+			exprs[i] = fmt.Sprintf("json_extract(tags, '$.\"' || :group_by_%d || '\"')", i)
+		}
+		selectClause += ", " + strings.Join(exprs, " || :group_sep || ") + " AS group_key"
 	}
 	selectClause += ", " + aggFunc + " AS agg_value"
 	if isLast {
@@ -90,8 +108,11 @@ func (r *metricPointRepository) QueryTimeSeries(ctx context.Context, projectId u
 		"from":       sqlitetypes.NewSQLiteTime(from),
 		"to":         sqlitetypes.NewSQLiteTime(to),
 	}
-	if hasGroupBy {
-		params["group_by"] = groupBy
+	for i, key := range groupKeys {
+		params[fmt.Sprintf("group_by_%d", i)] = key
+	}
+	if len(groupKeys) > 1 {
+		params["group_sep"] = shared.GroupKeySeparator
 	}
 
 	filterClauses := ""
@@ -163,6 +184,9 @@ func (r *metricPointRepository) QueryTimeSeries(ctx context.Context, projectId u
 			Timestamp: bucket,
 			Value:     value,
 		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 	return result, nil
 }

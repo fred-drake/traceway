@@ -38,7 +38,7 @@ func (e profileIngestController) Ingest(c *gin.Context) {
 
 	body, err := io.ReadAll(c.Request.Body)
 	if err != nil {
-		middleware.RejectBindError(c, err, "failed to read request body")
+		middleware.RejectIngestBindError(c, err, "failed to read request body")
 		return
 	}
 

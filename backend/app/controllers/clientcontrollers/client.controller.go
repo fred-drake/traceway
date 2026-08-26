@@ -112,7 +112,7 @@ func (e clientController) Report(c *gin.Context) {
 	var request ReportRequest
 	if err := c.ShouldBindBodyWithJSON(&request); err != nil {
 		parseSpan.End()
-		middleware.RejectBindError(c, err, err.Error())
+		middleware.RejectIngestBindError(c, err, err.Error())
 		return
 	}
 	parseSpan.End()

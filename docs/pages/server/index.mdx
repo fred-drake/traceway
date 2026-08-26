@@ -1,8 +1,13 @@
+import { Callout } from "nextra/components";
 import { DeploymentCards } from "../../components/DeploymentCards";
 
 # Self Host
 
 Traceway is fully self-hosted. You run the entire platform on your own infrastructure. This section covers how to get Traceway up and running.
+
+<Callout type="warning">
+  Upgrading an instance that sits behind a reverse proxy, ingress, or CDN? Read the [request limits upgrade notes](/server/upgrade-request-limits) first. The server now trusts `X-Forwarded-For` from loopback only, and until `TRUSTED_PROXIES` lists every hop, all of your users share one rate-limit bucket.
+</Callout>
 
 ## Deployment Options
 

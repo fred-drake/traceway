@@ -54,7 +54,7 @@ The ingest admission gate (`INGEST_MAX_CONCURRENT`, default 2 x CPU cores with a
 
 ## Server timeouts
 
-The server now closes connections whose headers or body do not finish arriving. Headers must arrive within 15 seconds. Every request body has a progress deadline: no more than 30 seconds between bytes, 10 minutes in total. Routes that take large bodies have their own budget: uploads may take up to 30 minutes as long as data keeps flowing, `/api/report` up to 5 minutes and OTLP up to 2 minutes, both with 20 seconds between bytes instead of 30. Time spent waiting in an admission gate does not count against any of these. A client that averages under 1 KB/s after the first 20 seconds is cut off with `408`; a body that has fully arrived is never rejected for being slow. Idle keep-alive connections are closed after 2 minutes.
+The server now closes connections whose headers or body do not finish arriving. Headers must arrive within 15 seconds. Every request body has a progress deadline: no more than 30 seconds between bytes, 10 minutes in total. Routes that take large bodies have their own budget: uploads may take up to 30 minutes as long as data keeps flowing, `/api/report` up to 10 minutes and OTLP up to 2 minutes, both with 20 seconds between bytes instead of 30. Time spent waiting in an admission gate does not count against any of these. A client that averages under 1 KB/s after the first 20 seconds is cut off with `408` (`503` with `Retry-After` on `/api/report`, `/api/profiles/ingest` and the OTLP endpoints, so OTLP exporters retry instead of dropping the batch); a body that has fully arrived is never rejected for being slow. Idle keep-alive connections are closed after 2 minutes.
 
 ## Public status pages in iframes
 
@@ -62,7 +62,7 @@ Every response now carries `X-Frame-Options: DENY` and a `frame-ancestors 'none'
 
 ## Metric query limits
 
-`POST /api/metrics/query` enforces: at most 50 queries per request and 20 tag filters per query, a time range of at most 731 days with `to` after `from` (`422`), buckets widened so no series exceeds 2000 points (the response reports the effective `intervalMinutes`), at most 200 groups per query (the result carries `truncatedGroups: true` when cut), and a 30-second deadline for the whole request that answers `504`. Dashboards built in the UI stay well inside these limits.
+`POST /api/metrics/query` enforces: at most 50 queries per request and 20 tag filters per query, a time range of at most 731 days with `to` not before `from` (equal timestamps are accepted; `422` otherwise), buckets widened so no series exceeds 2000 points (the response reports the effective `intervalMinutes`), at most 200 groups per query (the result carries `truncatedGroups: true` when cut), and a 30-second deadline for the whole request that answers `504`. Dashboards built in the UI stay well inside these limits.
 
 ## Transactional requests
 

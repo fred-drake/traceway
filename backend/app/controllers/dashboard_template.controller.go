@@ -216,7 +216,7 @@ type InstallTemplateRequest struct {
 func (c *dashboardTemplateController) Install(ctx *gin.Context) {
 	var req InstallTemplateRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 

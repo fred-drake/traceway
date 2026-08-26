@@ -86,7 +86,8 @@ func (r *dashboardRepository) FindAssignmentsByOrganization(tx *sql.Tx, organiza
 		`SELECT pd.dashboard_id, pd.project_id
 		FROM project_dashboards pd
 		JOIN dashboards d ON d.id = pd.dashboard_id
-		WHERE d.organization_id = :organization_id`,
+		WHERE d.organization_id = :organization_id
+		ORDER BY pd.project_id ASC, pd.position ASC, pd.dashboard_id ASC`,
 		lit.P{"organization_id": organizationId},
 	)
 }

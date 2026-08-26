@@ -146,8 +146,8 @@ func TestNotificationEmailFillsChrome(t *testing.T) {
 	if !strings.Contains(email.Footer, `"Critical errors"`) {
 		t.Errorf("footer = %q, want it to name the rule", email.Footer)
 	}
-	if email.Text != msg.Body {
-		t.Error("plaintext alternative must stay the message body")
+	if !strings.HasPrefix(email.Text, msg.Body) || !strings.Contains(email.Text, email.URL) || !strings.HasSuffix(email.Text, email.Footer) {
+		t.Errorf("plaintext = %q, want the body followed by the link and the footer", email.Text)
 	}
 }
 

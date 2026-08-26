@@ -5,9 +5,10 @@
 	type Props = {
 		value?: string;
 		class?: string;
+		onChange?: (value: string) => void;
 	};
 
-	let { value = $bindable('all'), class: className = 'w-[120px]' }: Props = $props();
+	let { value = $bindable('all'), class: className = 'w-[120px]', onChange }: Props = $props();
 </script>
 
 <ToolbarSelect
@@ -15,4 +16,5 @@
 	options={ROOT_FILTER_OPTIONS}
 	class={className}
 	ariaLabel="Filter by root or non-root"
+	{onChange}
 />

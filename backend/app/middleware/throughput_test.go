@@ -175,3 +175,135 @@ func TestGuardBodyReadClearsTheDeadlineOnceTheBodyIsComplete(t *testing.T) {
 		t.Fatalf("a handler outliving the idle window after the body arrived lost its context: %v", err)
 	}
 }
+
+func drainInSmallReads(r io.Reader) error {
+	buf := make([]byte, 64)
+	for {
+		if _, err := r.Read(buf); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
+}
+
+func sendWholeBody(t *testing.T, addr, path string, size int) {
+	t.Helper()
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: x\r\nContent-Length: %d\r\n\r\n", path, size)
+	go conn.Write(make([]byte, size))
+}
+
+func TestGuardBodyReadRestartsTheClockWhenRearmed(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prev := throughputGracePeriod
+	throughputGracePeriod = 500 * time.Millisecond
+	t.Cleanup(func() { throughputGracePeriod = prev })
+
+	readErrs := make(chan error, 1)
+	r := gin.New()
+	r.Use(GuardBodyReads(DefaultBodyIdle, DefaultBodyTotal))
+	r.POST("/upload", func(c *gin.Context) {
+		time.Sleep(700 * time.Millisecond)
+		GuardBodyRead(c, DefaultBodyIdle, DefaultBodyTotal)
+		readErrs <- drainInSmallReads(c.Request.Body)
+		c.Status(http.StatusOK)
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: r}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	sendWholeBody(t, ln.Addr().String(), "/upload", 200<<10)
+
+	select {
+	case err := <-readErrs:
+		if err != nil {
+			t.Fatalf("a body that arrived at once was rejected after the handler waited before reading: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out")
+	}
+}
+
+func TestAdmissionGateRestartsTheGuardAfterWaiting(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	prev := throughputGracePeriod
+	throughputGracePeriod = 500 * time.Millisecond
+	t.Cleanup(func() { throughputGracePeriod = prev })
+
+	readErrs := make(chan error, 1)
+	r := gin.New()
+	r.Use(GuardBodyReads(DefaultBodyIdle, DefaultBodyTotal))
+	gate := newAdmissionGate(1, 5*time.Second, "saturated", nil)
+	r.POST("/hold", gate, func(c *gin.Context) {
+		time.Sleep(700 * time.Millisecond)
+		c.Status(http.StatusOK)
+	})
+	r.POST("/upload", gate, func(c *gin.Context) {
+		readErrs <- drainInSmallReads(c.Request.Body)
+		c.Status(http.StatusOK)
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: r}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	sendWholeBody(t, ln.Addr().String(), "/hold", 0)
+	time.Sleep(50 * time.Millisecond)
+	sendWholeBody(t, ln.Addr().String(), "/upload", 200<<10)
+
+	select {
+	case err := <-readErrs:
+		if err != nil {
+			t.Fatalf("a body that waited in the admission gate was rejected: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out")
+	}
+}
+
+func TestGuardBodyReadLiftsTheServerReadTimeoutForBodilessRequests(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctxErrs := make(chan error, 1)
+	r := gin.New()
+	r.Use(GuardBodyReads(DefaultBodyIdle, DefaultBodyTotal))
+	r.GET("/stream", func(c *gin.Context) {
+		select {
+		case <-c.Request.Context().Done():
+			ctxErrs <- c.Request.Context().Err()
+		case <-time.After(1500 * time.Millisecond):
+			ctxErrs <- nil
+		}
+		c.Status(http.StatusOK)
+	})
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: r, ReadTimeout: time.Second}
+	go srv.Serve(ln)
+	t.Cleanup(func() { srv.Close() })
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	fmt.Fprint(conn, "GET /stream HTTP/1.1\r\nHost: x\r\n\r\n")
+
+	if err := <-ctxErrs; err != nil {
+		t.Fatalf("a bodiless handler outliving ReadTimeout lost its context: %v", err)
+	}
+}

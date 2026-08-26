@@ -82,10 +82,12 @@ export type MetricQueryResult = {
 	name: string;
 	unit: string;
 	series: Record<string, TimeSeriesPoint[]>;
+	truncatedGroups?: boolean;
 };
 
 export type MetricQueryResponse = {
 	results: MetricQueryResult[];
+	intervalMinutes?: number;
 };
 
 export type ExplorerMetricsTab = 'application' | 'stats' | 'server' | 'explorer';

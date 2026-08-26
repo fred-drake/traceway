@@ -2,8 +2,10 @@ package middleware
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -14,6 +16,10 @@ const minThroughputBytesPerSec = 1 << 10
 var throughputGracePeriod = 20 * time.Second
 
 var ErrBodyTooSlow = errors.New("request body delivered too slowly")
+
+// The raw deadline error is a *net.OpError naming the listener address, and
+// handlers echo bind errors verbatim, so it is replaced before it leaves Read.
+var ErrBodyTimedOut = fmt.Errorf("request body timed out: %w", os.ErrDeadlineExceeded)
 
 const (
 	DefaultBodyIdle  = 30 * time.Second
@@ -27,6 +33,7 @@ type progressBody struct {
 	ctl      *http.ResponseController
 	declared int64
 	idle     time.Duration
+	total    time.Duration
 	deadline time.Time
 	lastSet  time.Time
 	start    time.Time
@@ -36,6 +43,9 @@ type progressBody struct {
 
 func (p *progressBody) Read(b []byte) (int, error) {
 	n, err := p.rc.Read(b)
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		err = ErrBodyTimedOut
+	}
 	if p.done {
 		return n, err
 	}
@@ -67,10 +77,34 @@ func (p *progressBody) arm(now time.Time) {
 	p.lastSet = now
 }
 
+// restart re-arms the deadlines and restarts the throughput clock, so time a
+// request spent parked before its handler read anything (an admission gate)
+// is not held against it.
+func (p *progressBody) restart(now time.Time, idle, total time.Duration) {
+	p.idle = idle
+	p.total = total
+	p.deadline = now.Add(total)
+	p.start = now
+	p.read = 0
+	p.arm(now)
+}
+
 func (p *progressBody) Close() error { return p.rc.Close() }
+
+func restartBodyGuard(c *gin.Context) {
+	if existing, ok := c.Get(bodyGuardContextKey); ok {
+		if p, ok := existing.(*progressBody); ok && !p.done {
+			p.restart(time.Now(), p.idle, p.total)
+		}
+	}
+}
 
 func GuardBodyRead(c *gin.Context, idle, total time.Duration) {
 	if c.Request == nil || c.Request.Body == nil || c.Request.Body == http.NoBody {
+		// Nothing to read, but the server's ReadTimeout is still armed on the
+		// connection and would cancel a long-lived handler such as the MCP GET
+		// stream, so lift it the way a completed body does.
+		_ = http.NewResponseController(c.Writer).SetReadDeadline(time.Time{})
 		return
 	}
 	now := time.Now()
@@ -79,9 +113,7 @@ func GuardBodyRead(c *gin.Context, idle, total time.Duration) {
 			if p.done {
 				return
 			}
-			p.idle = idle
-			p.deadline = now.Add(total)
-			p.arm(now)
+			p.restart(now, idle, total)
 			return
 		}
 	}
@@ -92,6 +124,7 @@ func GuardBodyRead(c *gin.Context, idle, total time.Duration) {
 		ctl:      ctl,
 		declared: c.Request.ContentLength,
 		idle:     idle,
+		total:    total,
 		deadline: now.Add(total),
 		start:    now,
 	}

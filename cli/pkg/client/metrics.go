@@ -48,11 +48,16 @@ type MetricQueryResult struct {
 	Name   string                       `json:"name"`
 	Unit   string                       `json:"unit"`
 	Series map[string][]TimeSeriesPoint `json:"series"`
+	// TruncatedGroups is true when a grouped query was cut to the first 200 groups.
+	TruncatedGroups bool `json:"truncatedGroups,omitempty"`
 }
 
 // QueryMetricsResponse is the upstream MetricQueryResponse.
 type QueryMetricsResponse struct {
 	Results []MetricQueryResult `json:"results"`
+	// IntervalMinutes is the effective bucket size: the server widens the
+	// requested interval so no series exceeds 2000 points.
+	IntervalMinutes int `json:"intervalMinutes,omitempty"`
 }
 
 // QueryMetrics runs one or more metric queries against the project.

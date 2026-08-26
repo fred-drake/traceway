@@ -138,9 +138,6 @@ func (r *endpoint) toModel() models.Endpoint {
 	return e
 }
 
-// rootFilterClause returns a SQL fragment ("", " AND <col> = 1", " AND <col> = 0")
-// to splice into a WHERE clause based on the rootFilter param. Accepts "all" |
-// "root" | "non_root"; defaults to "all" (no filter).
 type endpointRepository struct{}
 
 func (e *endpointRepository) InsertAsync(ctx context.Context, lines []models.Endpoint) error {
@@ -309,7 +306,7 @@ func (e *endpointRepository) FindGroupedByEndpoint(ctx context.Context, projectI
 			continue
 		}
 
-		durations, err := fetchSortedDurations(ctx, projectId, g.Endpoint, fromDate, toDate)
+		durations, err := fetchSortedDurations(ctx, projectId, g.Endpoint, fromDate, toDate, rootFilter)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -537,7 +534,7 @@ func (e *endpointRepository) FindWorstEndpoints(ctx context.Context, projectId u
 
 	var stats []models.EndpointStats
 	for _, g := range groups {
-		durations, err := fetchSortedDurations(ctx, projectId, g.Endpoint, start, end)
+		durations, err := fetchSortedDurations(ctx, projectId, g.Endpoint, start, end, "")
 		if err != nil {
 			return nil, err
 		}
@@ -619,7 +616,7 @@ func (e *endpointRepository) GetEndpointStats(ctx context.Context, projectId uui
 			stats.Apdex = row.SatisfiedTolerating / float64(row.Count)
 		}
 
-		durations, err := fetchSortedDurations(ctx, projectId, endpoint, start, end)
+		durations, err := fetchSortedDurations(ctx, projectId, endpoint, start, end, "")
 		if err != nil {
 			return nil, err
 		}
@@ -841,9 +838,9 @@ func (e *endpointRepository) UpsertSlowEndpoint(ctx context.Context, projectId u
 
 // --- helpers ---
 
-func fetchSortedDurations(ctx context.Context, projectId uuid.UUID, endpoint string, from, to time.Time) ([]float64, error) {
+func fetchSortedDurations(ctx context.Context, projectId uuid.UUID, endpoint string, from, to time.Time, rootFilter string) ([]float64, error) {
 	results, err := lit.SelectNamed[endpointDurationRow](db.TelemetryDB,
-		"SELECT duration FROM endpoints WHERE project_id = :project_id AND endpoint = :endpoint AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0 ORDER BY duration ASC",
+		"SELECT duration FROM endpoints WHERE project_id = :project_id AND endpoint = :endpoint AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0"+shared.RootFilterClause("is_root", rootFilter)+" ORDER BY duration ASC",
 		lit.P{"project_id": projectId, "endpoint": endpoint, "from": sqlitetypes.NewSQLiteTime(from), "to": sqlitetypes.NewSQLiteTime(to)})
 	if err != nil {
 		return nil, err
@@ -926,7 +923,7 @@ func getTopEndpointsByMetric(ctx context.Context, projectId uuid.UUID, from, to 
 
 	var metrics []epMetric
 	for _, ep := range epRows {
-		durations, err := fetchSortedDurations(ctx, projectId, ep.Endpoint, from, to)
+		durations, err := fetchSortedDurations(ctx, projectId, ep.Endpoint, from, to, rootFilter)
 		if err != nil {
 			return nil, err
 		}

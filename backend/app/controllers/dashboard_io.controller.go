@@ -119,7 +119,7 @@ func (c *dashboardsController) Import(ctx *gin.Context) {
 	limitRequestBody(ctx)
 	var req ImportDashboardsRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if req.Mode == "" {
@@ -289,7 +289,7 @@ func (c *dashboardsController) ImportGrafana(ctx *gin.Context) {
 	limitRequestBody(ctx)
 	var req ImportGrafanaRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 

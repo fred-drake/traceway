@@ -487,3 +487,46 @@ func TestMetricPointRepository_QueryTimeSeries_LastAggregationWithGroupBy(t *tes
 	assertApproxEqual(t, "last sda", result["sda"][0].Value, 40.0, 0.1)
 	assertApproxEqual(t, "last sdb", result["sdb"][0].Value, 70.0, 0.1)
 }
+
+func TestMetricPointRepository_QueryTimeSeries_LastPerDeviceWithServerFilter(t *testing.T) {
+	setupTestDB(t)
+	ctx := context.Background()
+	projectId := uuid.New()
+	base := time.Now().UTC().Truncate(time.Hour)
+	tags := func(server, device string) map[string]string {
+		return map[string]string{"server_name": server, "device": device, "direction": "receive"}
+	}
+
+	points := []models.MetricPoint{
+		makeMetricPoint(projectId, "system.network.io", 1000, tags("web-1", "eth0"), base),
+		makeMetricPoint(projectId, "system.network.io", 1600, tags("web-1", "eth0"), base.Add(30*time.Second)),
+		makeMetricPoint(projectId, "system.network.io", 2200, tags("web-1", "eth0"), base.Add(time.Minute)),
+		makeMetricPoint(projectId, "system.network.io", 2800, tags("web-1", "eth0"), base.Add(90*time.Second)),
+		makeMetricPoint(projectId, "system.network.io", 10, tags("web-1", "lo"), base),
+		makeMetricPoint(projectId, "system.network.io", 20, tags("web-1", "lo"), base.Add(time.Minute)),
+		makeMetricPoint(projectId, "system.network.io", 99999, tags("web-2", "eth0"), base.Add(time.Minute)),
+	}
+	if err := MetricPointRepository.InsertAsync(ctx, points); err != nil {
+		t.Fatalf("InsertAsync failed: %v", err)
+	}
+
+	filters := map[string]string{"direction": "receive", "server_name": "web-1"}
+	result, err := MetricPointRepository.QueryTimeSeries(ctx, projectId, "system.network.io", base.Add(-time.Minute), base.Add(2*time.Minute), 1, "last", filters, "device", 0)
+	if err != nil {
+		t.Fatalf("QueryTimeSeries last per device failed: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected eth0 and lo, got %v", result)
+	}
+	eth0, lo := result["eth0"], result["lo"]
+	if len(eth0) != 2 || len(lo) != 2 {
+		t.Fatalf("expected 2 buckets per device, got eth0=%d lo=%d", len(eth0), len(lo))
+	}
+	assertApproxEqual(t, "eth0 bucket 0", eth0[0].Value, 1600, 0.1)
+	assertApproxEqual(t, "eth0 bucket 1", eth0[1].Value, 2800, 0.1)
+	assertApproxEqual(t, "lo bucket 0", lo[0].Value, 10, 0.1)
+	assertApproxEqual(t, "lo bucket 1", lo[1].Value, 20, 0.1)
+	if gap := eth0[1].Timestamp.Sub(eth0[0].Timestamp); gap != time.Minute {
+		t.Fatalf("bucket gap = %v, want 1m", gap)
+	}
+}

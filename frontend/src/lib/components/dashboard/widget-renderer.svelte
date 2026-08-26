@@ -49,6 +49,7 @@
 	let loading = $state(true);
 	let singleValue = $state<number | null>(null);
 	let resolvedUnit = $state('');
+	let truncated = $state(false);
 	let loadSequence = 0;
 
 	const colors = [
@@ -140,6 +141,7 @@
 				{ projectId: projectsState.currentProjectId ?? undefined }
 			);
 			if (sequence !== loadSequence) return;
+			truncated = response.results.some((r) => r.truncatedGroups);
 
 			const units = new SvelteSet<string>();
 			const usedKeys = new SvelteSet<string>();
@@ -367,5 +369,9 @@
 				</button>
 			{/each}
 		</div>
+	{/if}
+
+	{#if truncated && !loading}
+		<div class="px-2 pt-1 text-xs text-muted-foreground">Showing the first 200 groups</div>
 	{/if}
 </div>

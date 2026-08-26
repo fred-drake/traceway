@@ -111,7 +111,7 @@ func (a aiTraceController) FindGroupedByTraceName(c *gin.Context) {
 
 	var request AiTraceSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -152,7 +152,7 @@ func (a aiTraceController) FindByTraceName(c *gin.Context) {
 
 	var request AiTraceInstancesRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -233,7 +233,7 @@ func (a aiTraceController) FindConversations(c *gin.Context) {
 
 	var request AiConversationSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -281,7 +281,7 @@ func (a aiTraceController) GetConversationDetail(c *gin.Context) {
 
 	var request AiConversationDetailRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ConversationId == "" {
@@ -347,7 +347,7 @@ func (a aiTraceController) FindAiUsers(c *gin.Context) {
 
 	var request AiUserSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 

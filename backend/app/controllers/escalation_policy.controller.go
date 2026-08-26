@@ -77,7 +77,7 @@ func (c *escalationPolicyController) Create(ctx *gin.Context) {
 
 	var request escalationPolicyRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	request.Name = strings.TrimSpace(request.Name)
@@ -133,7 +133,7 @@ func (c *escalationPolicyController) Update(ctx *gin.Context) {
 	}
 	var request escalationPolicyRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	request.Name = strings.TrimSpace(request.Name)

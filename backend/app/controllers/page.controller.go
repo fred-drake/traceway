@@ -78,7 +78,7 @@ func (c *pageController) List(ctx *gin.Context) {
 	}
 	var request listPagesRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if !validPageStatusFilters[request.Status] {
@@ -384,7 +384,7 @@ func (c *pageController) UnresolvedForIssues(ctx *gin.Context) {
 	}
 	var request pagesForIssuesRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if len(request.Hashes) > maxBulkIssueHashes {

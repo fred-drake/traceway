@@ -224,7 +224,7 @@ func (ctrl *incidentController) Create(ctx *gin.Context) {
 	}
 	var req manualIncidentRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	tx := db.GetTx(ctx)
@@ -328,7 +328,7 @@ func (ctrl *incidentController) Update(ctx *gin.Context) {
 	}
 	var req editIncidentRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	tx := db.GetTx(ctx)
@@ -452,7 +452,7 @@ func (ctrl *incidentController) CreateUpdate(ctx *gin.Context) {
 	}
 	var req postIncidentUpdateRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	tx := db.GetTx(ctx)

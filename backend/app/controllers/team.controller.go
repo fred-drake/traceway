@@ -106,7 +106,7 @@ func (c *teamController) Create(ctx *gin.Context) {
 
 	var request createTeamRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if message := validateTeamName(request.Name); message != "" {
@@ -177,7 +177,7 @@ func (c *teamController) Update(ctx *gin.Context) {
 	}
 	var request updateTeamRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if message := validateTeamName(request.Name); message != "" {
@@ -271,7 +271,7 @@ func (c *teamController) SetMembers(ctx *gin.Context) {
 	}
 	var request setTeamMembersRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if message, err := c.checkMembersInOrg(tx, organizationId, request.UserIds); err != nil {
@@ -298,7 +298,7 @@ func (c *teamController) SetProjects(ctx *gin.Context) {
 	}
 	var request setTeamProjectsRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if message, err := c.checkProjectsAssignable(tx, organizationId, team.Id, request.ProjectIds); err != nil {

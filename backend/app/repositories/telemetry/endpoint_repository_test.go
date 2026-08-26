@@ -550,3 +550,35 @@ func TestEndpointRepository_GetEndpointStats_EmptyWindow(t *testing.T) {
 		t.Errorf("expected IsStream false for empty window")
 	}
 }
+
+func TestEndpointRepository_FindGroupedByEndpoint_RootFilterPercentiles(t *testing.T) {
+	setupTestDB(t)
+	ctx := context.Background()
+	projectId := uuid.New()
+	now := truncateMs(time.Now().UTC())
+
+	var endpoints []models.Endpoint
+	for i := 0; i < 4; i++ {
+		at := now.Add(time.Duration(i) * time.Second)
+		root := makeEndpoint(projectId, "GET /api/orders", 100*time.Millisecond, 200, at)
+		root.IsRoot = true
+		endpoints = append(endpoints, root, makeEndpoint(projectId, "GET /api/orders", 900*time.Millisecond, 200, at.Add(500*time.Millisecond)))
+	}
+	if err := EndpointRepository.InsertAsync(ctx, endpoints); err != nil {
+		t.Fatalf("InsertAsync failed: %v", err)
+	}
+
+	stats, total, err := EndpointRepository.FindGroupedByEndpoint(ctx, projectId, now.Add(-time.Hour), now.Add(time.Hour), 1, 10, "count", "desc", "", "root", "")
+	if err != nil {
+		t.Fatalf("FindGroupedByEndpoint with root filter failed: %v", err)
+	}
+	if total != 1 || len(stats) != 1 {
+		t.Fatalf("expected 1 grouped endpoint, got total=%d len=%d", total, len(stats))
+	}
+	if stats[0].Count != 4 {
+		t.Errorf("count = %d, want the 4 root calls", stats[0].Count)
+	}
+	if stats[0].P95Duration > 100*time.Millisecond {
+		t.Errorf("p95 = %v, want the root-only 100ms; non-root durations leaked into the percentile", stats[0].P95Duration)
+	}
+}

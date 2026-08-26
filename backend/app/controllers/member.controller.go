@@ -30,7 +30,7 @@ func (c *memberController) UpdateRole(ctx *gin.Context) {
 
 	var request models.UpdateMemberRoleRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -176,7 +176,7 @@ func (c *memberController) UpdateProjectRole(ctx *gin.Context) {
 
 	var request models.UpdateProjectRoleRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 

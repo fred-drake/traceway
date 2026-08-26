@@ -83,7 +83,7 @@ func (ctrl *notificationRuleController) Create(ctx *gin.Context) {
 
 	var req createRuleRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -171,7 +171,7 @@ func (ctrl *notificationRuleController) Update(ctx *gin.Context) {
 
 	var req createRuleRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -326,7 +326,7 @@ func (ctrl *notificationRuleController) Snooze(ctx *gin.Context) {
 
 	var req snoozeRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 

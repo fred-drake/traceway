@@ -18,7 +18,6 @@ import (
 const (
 	twWorkers    = 2
 	twQueueDepth = 64
-	twJobTimeout = 2 * time.Minute
 )
 
 type twJob struct {
@@ -92,8 +91,7 @@ func startTWWorkers() {
 }
 
 func warmTWArtifact(job twJob) {
-	ctx, cancel := context.WithTimeout(context.Background(), twJobTimeout)
-	defer cancel()
+	ctx := context.Background()
 
 	mapKey := SourceMapStorageKey(job.projectId, job.base+".map")
 	bundleKey := SourceMapStorageKey(job.projectId, job.base)

@@ -45,6 +45,7 @@ backend/static/dist/
 /backend/storage/recordings
 /backend/storage
 /docs/.wrangler
+/examples/devtesting-embedded/devtesting-embedded
 /examples/devtesting-embedded/frontend/node_modules
 /examples/devtesting-embedded/storage
 /examples/express-otel/node_modules

@@ -5,6 +5,7 @@
 	import * as Table from '$lib/components/ui/table';
 	import TableContainer from '$lib/components/traceway/table-container.svelte';
 	import ErrorRetryBox from '$lib/components/traceway/error-retry-box.svelte';
+	import PartialNotice from './partial-notice.svelte';
 	import { getErrorMessage } from '$lib/utils/errors';
 	import { formatRelativeTimeAgo } from '$lib/utils/formatters';
 	import { createRowClickHandler } from '$lib/utils/navigation';
@@ -23,6 +24,7 @@
 
 	let issues = $state<OrgIssueRow[]>([]);
 	let totalGroups = $state(0);
+	let partial = $state(false);
 	let loading = $state(true);
 	let error = $state('');
 	let loadGeneration = 0;
@@ -31,12 +33,14 @@
 		const generation = ++loadGeneration;
 		loading = true;
 		error = '';
+		partial = false;
 		api
 			.get(`/organizations/${orgId}/overview/issues`)
 			.then((response) => {
 				if (generation !== loadGeneration) return;
 				issues = response.issues || [];
 				totalGroups = response.totalGroups || 0;
+				partial = response.partial === true;
 			})
 			.catch((cause) => {
 				if (generation !== loadGeneration) return;
@@ -71,6 +75,10 @@
 			</span>
 		{/if}
 	</div>
+
+	{#if partial}
+		<PartialNotice />
+	{/if}
 
 	{#if loading}
 		<div class="flex h-48 items-center justify-center">

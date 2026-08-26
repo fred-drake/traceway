@@ -11,6 +11,7 @@
 	import { Badge } from '$lib/components/ui/badge';
 	import TableContainer from '$lib/components/traceway/table-container.svelte';
 	import ErrorRetryBox from '$lib/components/traceway/error-retry-box.svelte';
+	import PartialNotice from './partial-notice.svelte';
 	import CheckStatusBadge from '$lib/components/synthetics/check-status-badge.svelte';
 	import MonitorTypeBadge from '$lib/components/synthetics/monitor-type-badge.svelte';
 	import {
@@ -36,11 +37,14 @@
 	let checks = $state<OrgMonitorRow[]>([]);
 	let checksLoading = $state(true);
 	let checksError = $state('');
+	let checksPartial = $state(false);
+	let checksGeneration = 0;
 
 	let incidents = $state<OrgIncident[]>([]);
 	let incidentsLoading = $state(true);
 	let incidentsError = $state('');
-	let loadGeneration = 0;
+	let incidentsGeneration = 0;
+	let activeOrganizationId: number | null = null;
 
 	const SORT_STORAGE_KEY = 'org-monitors';
 	const initialSort = getSortState(SORT_STORAGE_KEY, { field: 'status', direction: 'asc' });
@@ -50,15 +54,17 @@
 	async function loadChecks(orgId: number, generation: number) {
 		checksLoading = true;
 		checksError = '';
+		checksPartial = false;
 		try {
 			const response = await api.get(`/organizations/${orgId}/overview/monitors`);
-			if (generation !== loadGeneration) return;
+			if (generation !== checksGeneration) return;
 			checks = response.checks || [];
+			checksPartial = response.partial === true;
 		} catch (e) {
-			if (generation !== loadGeneration) return;
+			if (generation !== checksGeneration) return;
 			checksError = getErrorMessage(e) || 'Failed to load monitors';
 		} finally {
-			if (generation === loadGeneration) checksLoading = false;
+			if (generation === checksGeneration) checksLoading = false;
 		}
 	}
 
@@ -67,29 +73,35 @@
 		incidentsError = '';
 		try {
 			const response = await api.get(`/organizations/${orgId}/incidents`);
-			if (generation !== loadGeneration) return;
+			if (generation !== incidentsGeneration) return;
 			incidents = response.incidents || [];
 		} catch (e) {
-			if (generation !== loadGeneration) return;
+			if (generation !== incidentsGeneration) return;
 			incidentsError = getErrorMessage(e) || 'Failed to load incidents';
 		} finally {
-			if (generation === loadGeneration) incidentsLoading = false;
+			if (generation === incidentsGeneration) incidentsLoading = false;
 		}
 	}
 
 	$effect(() => {
 		const orgId = organizationId;
-		const generation = ++loadGeneration;
-		loadChecks(orgId, generation);
-		loadIncidents(orgId, generation);
+		if (activeOrganizationId !== orgId) {
+			activeOrganizationId = orgId;
+			checks = [];
+			checksError = '';
+			incidents = [];
+			incidentsError = '';
+		}
+		loadChecks(orgId, ++checksGeneration);
+		loadIncidents(orgId, ++incidentsGeneration);
 	});
 
 	function retryChecks() {
-		loadChecks(organizationId, ++loadGeneration);
+		loadChecks(organizationId, ++checksGeneration);
 	}
 
 	function retryIncidents() {
-		loadIncidents(organizationId, ++loadGeneration);
+		loadIncidents(organizationId, ++incidentsGeneration);
 	}
 
 	function handleSort(field: SortField) {
@@ -147,6 +159,9 @@
 
 <div class="space-y-6">
 	<section class="space-y-3">
+		{#if checksPartial}
+			<PartialNotice />
+		{/if}
 		{#if checksLoading}
 			<div class="flex h-48 items-center justify-center">
 				<LoadingCircle size="xlg" />

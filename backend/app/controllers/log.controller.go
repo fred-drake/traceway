@@ -67,7 +67,7 @@ func (l logController) List(c *gin.Context) {
 
 	var request LogSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 

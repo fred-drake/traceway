@@ -151,7 +151,7 @@ func (p projectController) ListProjects(c *gin.Context) {
 func (p projectController) CreateProject(c *gin.Context) {
 	var request CreateProjectRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -229,7 +229,7 @@ func (p projectController) CreateProject(c *gin.Context) {
 func (p projectController) UpdateProject(c *gin.Context) {
 	var request UpdateProjectRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -345,7 +345,7 @@ func (p projectController) UpdateProject(c *gin.Context) {
 func (p projectController) DeleteProject(c *gin.Context) {
 	var request DeleteProjectRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 

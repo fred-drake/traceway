@@ -540,14 +540,23 @@ type chatRequest struct {
 	} `json:"messages"`
 }
 
+// defaultModel mirrors the gateway selection in callGateway, so the fallback
+// model always belongs to the provider that will actually serve the request.
+func defaultModel() string {
+	if os.Getenv("ORCAROUTER_API_KEY") != "" {
+		if model := os.Getenv("ORCAROUTER_MODEL"); model != "" {
+			return model
+		}
+		return "orcarouter/auto"
+	}
+	if model := os.Getenv("OPENROUTER_MODEL"); model != "" {
+		return model
+	}
+	return "anthropic/claude-sonnet-5"
+}
+
 func registerAIChatRoutes(router *gin.Engine, svc *otelService) {
-	model := os.Getenv("ORCAROUTER_MODEL")
-	if model == "" {
-		model = os.Getenv("OPENROUTER_MODEL")
-	}
-	if model == "" {
-		model = "orcarouter/auto"
-	}
+	model := defaultModel()
 
 	router.POST("/api/ai/chat", func(c *gin.Context) {
 		if os.Getenv("ORCAROUTER_API_KEY") == "" && os.Getenv("OPENROUTER_API_KEY") == "" {

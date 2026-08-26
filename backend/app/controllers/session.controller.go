@@ -38,7 +38,7 @@ func (s sessionController) FindAllSessions(c *gin.Context) {
 
 	var request SessionSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 

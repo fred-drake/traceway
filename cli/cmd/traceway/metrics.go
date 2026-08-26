@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -97,12 +98,22 @@ func runMetricsQuery(cmd *cobra.Command, _ []string) error {
 				_, _ = fmt.Fprintf(tw, "%s\t%s\t-\t0\t-\n", r.Name, pickStr(r.Unit, "-"))
 				continue
 			}
-			for group, pts := range r.Series {
+			groups := make([]string, 0, len(r.Series))
+			for group := range r.Series {
+				groups = append(groups, group)
+			}
+			sort.Strings(groups)
+			for _, group := range groups {
+				pts := r.Series[group]
 				latest := "-"
 				if len(pts) > 0 {
 					latest = fmt.Sprintf("%g", pts[len(pts)-1].Value)
 				}
-				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", r.Name, pickStr(r.Unit, "-"), group, len(pts), latest)
+				cell := group
+				if r.TruncatedGroups {
+					cell += " (truncated)"
+				}
+				_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n", r.Name, pickStr(r.Unit, "-"), cell, len(pts), latest)
 			}
 		}
 		return tw.Flush()

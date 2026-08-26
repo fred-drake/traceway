@@ -21,7 +21,7 @@ type metricQueryIn struct {
 type queryMetricsIn struct {
 	projectIn
 	timeRangeIn
-	IntervalMinutes int             `json:"interval_minutes,omitempty" jsonschema:"Bucket size in minutes. Default 0 lets the server pick. Read down the buckets for the step where a value jumps."`
+	IntervalMinutes int             `json:"interval_minutes,omitempty" jsonschema:"Bucket size in minutes. Default 0 lets the server pick. The server may widen it so no series exceeds 2000 points; the effective value is returned as intervalMinutes. Read down the buckets for the step where a value jumps."`
 	Queries         []metricQueryIn `json:"queries" jsonschema:"One or more metric queries to run over the same window."`
 }
 

@@ -93,6 +93,13 @@ func Run(opts ...Option) {
 		os.Exit(1)
 	}
 
+	trustedNets, proxyErr := trustedProxyNets(cfg.TrustedProxyList())
+	if proxyErr != nil {
+		fmt.Fprintln(os.Stderr, "FATAL: invalid TRUSTED_PROXIES: "+proxyErr.Error())
+		fmt.Fprintln(os.Stderr, "Use comma-separated IP addresses or CIDR ranges, for example 10.0.0.0/8,203.0.113.7")
+		os.Exit(1)
+	}
+
 	err := db.Init()
 	if err != nil {
 		panic(fmt.Errorf("error connecting to database: %w", err))
@@ -196,7 +203,7 @@ func Run(opts ...Option) {
 		panic(fmt.Errorf("invalid TRUSTED_PROXIES: %w", err))
 	}
 	if cfg.TrustedProxyHeader == "" {
-		router.Use(warnOnUntrustedForwardedFor(cfg.TrustedProxyList()))
+		router.Use(warnOnUntrustedForwardedFor(trustedNets))
 	}
 	router.Use(middleware.SecurityHeaders)
 
@@ -330,18 +337,17 @@ func parsePorts(ports string) []string {
 	return out
 }
 
-func warnOnUntrustedForwardedFor(proxies []string) gin.HandlerFunc {
-	detect := newUntrustedForwarderDetector(proxies)
+func warnOnUntrustedForwardedFor(nets []*net.IPNet) gin.HandlerFunc {
+	detect := newUntrustedForwarderDetector(nets)
 	return func(c *gin.Context) {
 		if peer, first := detect(c); first {
-			config.Logf("X-Forwarded-For received from %s, which is not in TRUSTED_PROXIES. The header is ignored, so per-IP rate limits and session client IPs see that address instead of the real client. If %s is your proxy or CDN, add its range to TRUSTED_PROXIES.", peer, peer)
+			config.Logf("X-Forwarded-For or X-Real-IP received from %s, which is not in TRUSTED_PROXIES. The header is ignored, so per-IP rate limits and session client IPs see that address instead of the real client. If %s is your proxy or CDN, add its range to TRUSTED_PROXIES.", peer, peer)
 		}
 		c.Next()
 	}
 }
 
-func newUntrustedForwarderDetector(proxies []string) func(*gin.Context) (string, bool) {
-	nets := trustedProxyNets(proxies)
+func newUntrustedForwarderDetector(nets []*net.IPNet) func(*gin.Context) (string, bool) {
 	var once sync.Once
 	return func(c *gin.Context) (string, bool) {
 		if c.GetHeader("X-Forwarded-For") == "" && c.GetHeader("X-Real-IP") == "" {
@@ -358,22 +364,24 @@ func newUntrustedForwarderDetector(proxies []string) func(*gin.Context) (string,
 	}
 }
 
-func trustedProxyNets(proxies []string) []*net.IPNet {
+func trustedProxyNets(proxies []string) ([]*net.IPNet, error) {
 	var nets []*net.IPNet
 	for _, p := range proxies {
 		if _, n, err := net.ParseCIDR(p); err == nil {
 			nets = append(nets, n)
 			continue
 		}
-		if ip := net.ParseIP(p); ip != nil {
-			bits := 32
-			if ip.To4() == nil {
-				bits = 128
-			}
-			nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+		ip := net.ParseIP(p)
+		if ip == nil {
+			return nil, fmt.Errorf("%q is not an IP address or CIDR range", p)
 		}
+		bits := 32
+		if ip.To4() == nil {
+			bits = 128
+		}
+		nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
 	}
-	return nets
+	return nets, nil
 }
 
 func containsIP(nets []*net.IPNet, ip net.IP) bool {

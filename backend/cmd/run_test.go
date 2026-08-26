@@ -75,7 +75,11 @@ func clientIPRouter(t *testing.T, cfg *config.Cfg) *gin.Engine {
 
 func TestUntrustedForwarderDetectorFiresOnceForPeersOutsideTheList(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	detect := newUntrustedForwarderDetector([]string{"10.0.0.0/8", "::1"})
+	nets, err := trustedProxyNets([]string{"10.0.0.0/8", "::1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detect := newUntrustedForwarderDetector(nets)
 	check := func(peer, xff string) (string, bool) {
 		c, _ := gin.CreateTestContext(httptest.NewRecorder())
 		c.Request = httptest.NewRequest(http.MethodGet, "/", nil)
@@ -96,6 +100,25 @@ func TestUntrustedForwarderDetectorFiresOnceForPeersOutsideTheList(t *testing.T)
 	}
 	if _, first := check("172.17.0.1", "198.51.100.20"); first {
 		t.Fatal("fired a second time")
+	}
+}
+
+func TestTrustedProxyNetsRejectsMalformedEntries(t *testing.T) {
+	nets, err := trustedProxyNets([]string{"10.0.0.0/8", "203.0.113.7", "2001:db8::1", "2001:db8::/32"})
+	if err != nil {
+		t.Fatalf("valid list rejected: %v", err)
+	}
+	if len(nets) != 4 {
+		t.Fatalf("got %d networks, want 4", len(nets))
+	}
+	if ones, bits := nets[1].Mask.Size(); ones != 32 || bits != 32 {
+		t.Fatalf("bare IPv4 mask = /%d of %d, want /32", ones, bits)
+	}
+	if ones, bits := nets[2].Mask.Size(); ones != 128 || bits != 128 {
+		t.Fatalf("bare IPv6 mask = /%d of %d, want /128", ones, bits)
+	}
+	if _, err := trustedProxyNets([]string{"10.0.0.0/8", "not-a-cidr"}); err == nil {
+		t.Fatal("malformed entry accepted")
 	}
 }
 

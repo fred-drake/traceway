@@ -106,7 +106,8 @@ type MetricQueryItem struct {
 }
 
 type MetricQueryResponse struct {
-	Results []MetricQueryResult `json:"results"`
+	Results         []MetricQueryResult `json:"results"`
+	IntervalMinutes int                 `json:"intervalMinutes"`
 }
 
 type MetricQueryResult struct {
@@ -194,7 +195,7 @@ func (c *metricQueryController) Query(ctx *gin.Context) {
 		})
 	}
 
-	ctx.JSON(http.StatusOK, MetricQueryResponse{Results: results})
+	ctx.JSON(http.StatusOK, MetricQueryResponse{Results: results, IntervalMinutes: req.IntervalMinutes})
 }
 
 type DiscoverResponse struct {
@@ -415,7 +416,7 @@ func (c *metricQueryController) UpdateRegistry(ctx *gin.Context) {
 		Description string `json:"description"`
 	}
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 

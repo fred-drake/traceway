@@ -94,7 +94,7 @@ func (e exceptionStackTraceController) FindGrouppedExceptionStackTraces(c *gin.C
 
 	var request ExceptionSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 

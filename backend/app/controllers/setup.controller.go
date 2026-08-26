@@ -129,7 +129,7 @@ func validateSetupPlanPayload(payload *models.SetupPlanPayload) string {
 func (s setupController) SubmitPlan(ctx *gin.Context) {
 	var payload models.SetupPlanPayload
 	if err := ctx.ShouldBindJSON(&payload); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if msg := validateSetupPlanPayload(&payload); msg != "" {

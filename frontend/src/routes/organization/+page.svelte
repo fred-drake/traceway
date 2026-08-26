@@ -49,9 +49,12 @@
 			: projectsState.projects.filter((project) => project.organizationId === currentOrganizationId)
 	);
 
-	const singleProject = $derived(
-		organizationProjects.length === 1 ? organizationProjects[0] : null
-	);
+	const redirectHref = $derived.by(() => {
+		if (currentOrganizationId === null) return null;
+		if (organizationProjects.length === 1) return `/?projectId=${organizationProjects[0].id}`;
+		if (organizationProjects.length === 0) return '/setup';
+		return null;
+	});
 
 	const hasBackendProjects = $derived(
 		organizationProjects.some((project) => isBackendFramework(project.framework))
@@ -81,8 +84,8 @@
 	$effect(() => {
 		const organizationId = currentOrganizationId;
 		if (organizationId === null) return;
-		if (projectsState.loaded && singleProject) {
-			gotoHref(`/?projectId=${singleProject.id}`, { replaceState: true });
+		if (projectsState.loaded && redirectHref) {
+			gotoHref(redirectHref, { replaceState: true });
 			return;
 		}
 		if (
@@ -102,7 +105,7 @@
 	});
 </script>
 
-{#if !projectsState.loaded || singleProject}
+{#if !projectsState.loaded || redirectHref}
 	<div class="flex h-48 items-center justify-center">
 		<LoadingCircle size="xlg" />
 	</div>

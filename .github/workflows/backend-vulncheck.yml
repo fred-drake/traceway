@@ -69,9 +69,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # setup-go@v5 honors the `toolchain` directive in go.mod, so this installs
-      # go1.26.6 -- the same version release-traceway.yml builds the runner
-      # with. The Docker images are not covered by that: the official golang
+      # setup-go@v5 reads the `go` line of go.mod; Go's own GOTOOLCHAIN=auto
+      # then downloads the `toolchain` version, so the scan runs on the same
+      # release release-traceway.yml builds the runner with. The Docker images are not covered by that: the official golang
       # bases set GOTOOLCHAIN=local, so they build with whatever the floating
       # golang:1.26-* tag ships, which is >= what is scanned here. One setup-go
       # cache shared by the three rows is fine here, unlike backend.yml: with

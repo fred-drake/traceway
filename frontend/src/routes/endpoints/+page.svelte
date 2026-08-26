@@ -372,6 +372,11 @@
 		loadData(true);
 	}
 
+	function applyFilterChange() {
+		page = 1;
+		loadData(true);
+	}
+
 	function handleChartRangeSelect(from: Date, to: Date) {
 		selectedPreset = null;
 		fromDate = new CalendarDate(from.getFullYear(), from.getMonth() + 1, from.getDate());
@@ -460,7 +465,11 @@
 		disabled={loading}
 	>
 		{#snippet pillEnd()}
-			<EndpointFilter bind:rootValue={rootFilter} bind:methodValue={methodFilter} />
+			<EndpointFilter
+				bind:rootValue={rootFilter}
+				bind:methodValue={methodFilter}
+				onChange={applyFilterChange}
+			/>
 		{/snippet}
 	</SearchBar>
 

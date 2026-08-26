@@ -25,7 +25,7 @@ func (c *patController) Create(ctx *gin.Context) {
 
 	var req models.CreatePATRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	name := strings.TrimSpace(req.Name)

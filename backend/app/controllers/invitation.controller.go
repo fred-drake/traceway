@@ -29,7 +29,7 @@ func (c *invitationController) InviteUser(ctx *gin.Context) {
 
 	var request models.InviteUserRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -236,7 +236,7 @@ func (c *invitationController) AcceptInvitation(ctx *gin.Context) {
 
 	var request models.AcceptInvitationRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 

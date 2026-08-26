@@ -213,7 +213,7 @@ func (a oauthController) findOrCreateUser(c *gin.Context, provider string, gothU
 func (a oauthController) FinishSetup(c *gin.Context) {
 	var request finishOAuthSetupRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(c, err, "Invalid request body")
 		return
 	}
 

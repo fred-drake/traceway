@@ -11,7 +11,7 @@
 	import { PaginationFooter } from '$lib/components/ui/pagination-footer';
 	import { TimeRangePicker } from '$lib/components/ui/time-range-picker';
 	import { SearchBar } from '$lib/components/ui/search-bar';
-	import { RootFilter } from '$lib/components/ui/root-filter';
+	import { RootFilter, isRootFilterValue } from '$lib/components/ui/root-filter';
 	import { NonRootChip } from '$lib/components/ui/non-root-chip';
 	import { CalendarDate } from '@internationalized/date';
 	import { browser } from '$app/environment';
@@ -68,9 +68,10 @@
 	function readSearchAndFilterFromUrl() {
 		if (!browser) return { search: '', rootFilter: 'all' };
 		const params = new URLSearchParams(window.location.search);
+		const rootParam = params.get('rootFilter');
 		return {
 			search: params.get('search') || '',
-			rootFilter: params.get('rootFilter') || 'all'
+			rootFilter: isRootFilterValue(rootParam) ? rootParam : 'all'
 		};
 	}
 
@@ -99,12 +100,15 @@
 	function handlePopState() {
 		const urlParams = parseTimeRangeFromUrl(timezone);
 		const range = getResolvedTimeRange(urlParams, timezone);
+		const searchState = readSearchAndFilterFromUrl();
 
 		selectedPreset = urlParams.preset;
 		fromDate = dateToCalendarDate(range.from, timezone);
 		fromTime = dateToTimeString(range.from, timezone);
 		toDate = dateToCalendarDate(range.to, timezone);
 		toTime = dateToTimeString(range.to, timezone);
+		searchQuery = searchState.search;
+		rootFilter = searchState.rootFilter;
 
 		page = 1;
 		loadData(false);
@@ -230,6 +234,11 @@
 		loadData(true);
 	}
 
+	function applyFilterChange() {
+		page = 1;
+		loadData(true);
+	}
+
 	onMount(() => {
 		// Add popstate listener for back/forward navigation
 		window.addEventListener('popstate', handlePopState);
@@ -269,6 +278,7 @@
 		{#snippet pillEnd()}
 			<RootFilter
 				bind:value={rootFilter}
+				onChange={applyFilterChange}
 				class="h-9 w-[110px] shrink-0 shadow-none sm:rounded-none sm:border-r-0"
 			/>
 		{/snippet}

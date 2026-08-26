@@ -120,7 +120,7 @@ func (p profileController) FindGroupedByService(c *gin.Context) {
 
 	var request ProfileGroupedRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -155,7 +155,7 @@ func (p profileController) GetSeries(c *gin.Context) {
 
 	var request ProfileSeriesRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ServiceName == "" || request.Type == "" {
@@ -191,7 +191,7 @@ func (p profileController) DiscoverTypes(c *gin.Context) {
 
 	var request ProfileTypesRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ServiceName == "" {
@@ -227,7 +227,7 @@ func (p profileController) GetFlameGraph(c *gin.Context) {
 
 	var request ProfileFlameGraphRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ServiceName == "" || request.Type == "" {
@@ -260,7 +260,7 @@ func (p profileController) GetTopFunctions(c *gin.Context) {
 
 	var request ProfileTopFunctionsRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ServiceName == "" || request.Type == "" {
@@ -300,7 +300,7 @@ func (p profileController) DownloadPprof(c *gin.Context) {
 
 	var request ProfileFlameGraphRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ServiceName == "" || request.Type == "" {
@@ -385,7 +385,7 @@ func (p profileController) GetSeriesBreakdown(c *gin.Context) {
 
 	var request ProfileSeriesBreakdownRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ServiceName == "" || request.Type == "" || request.Dimension == "" {
@@ -425,7 +425,7 @@ func (p profileController) DiscoverDimensions(c *gin.Context) {
 
 	var request ProfileDimensionsRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ServiceName == "" || request.Type == "" {
@@ -456,7 +456,7 @@ func (p profileController) DiscoverLabels(c *gin.Context) {
 
 	var request ProfileLabelsRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 	if request.ServiceName == "" || request.Type == "" {

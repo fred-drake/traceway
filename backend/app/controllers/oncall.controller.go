@@ -59,7 +59,7 @@ func (c *oncallController) CreateSchedule(ctx *gin.Context) {
 
 	var request scheduleRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	message, definition, tzName := c.validateScheduleRequest(ctx, organizationId, &request, 0)
@@ -122,7 +122,7 @@ func (c *oncallController) UpdateSchedule(ctx *gin.Context) {
 	}
 	var request scheduleRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	message, definition, tzName := c.validateScheduleRequest(ctx, organizationId, &request, schedule.Id)
@@ -283,7 +283,7 @@ func (c *oncallController) CreateOverride(ctx *gin.Context) {
 	}
 	var request createOverrideRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if !request.StartAt.Before(request.EndAt) {

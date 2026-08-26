@@ -1,6 +1,7 @@
 package controllers
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"math"
@@ -96,7 +97,7 @@ func clampPercent(value float64) float64 {
 }
 
 func otelFractionToPercent(value float64) float64 {
-	if value <= 1.5 {
+	if value <= 1 {
 		value *= 100
 	}
 	return clampPercent(value)
@@ -140,6 +141,34 @@ func latestCounterRate(points []models.TimeSeriesPoint) (float64, bool) {
 		return 0, true
 	}
 	return delta / seconds, true
+}
+
+func sumDeviceRates(series map[string][]models.TimeSeriesPoint) (float64, bool) {
+	total, found := 0.0, false
+	for _, points := range series {
+		rate, ok := latestCounterRate(points)
+		if !ok {
+			continue
+		}
+		total += rate
+		found = true
+	}
+	return total, found
+}
+
+// system.network.io is a cumulative counter per device, so summing samples
+// inside a bucket (or across devices) makes the bucket delta meaningless. The
+// last sample per device per minute, differenced and then summed, is the rate.
+func loadNetworkRate(ctx context.Context, projectId uuid.UUID, serverName, direction string, since, to time.Time) (*float64, error) {
+	series, err := telemetry.MetricPointRepository.QueryTimeSeries(ctx, projectId, models.MetricNameSystemNetworkIO, since, to, 1, "last", map[string]string{"direction": direction, "server_name": serverName}, "device", 0)
+	if err != nil {
+		return nil, err
+	}
+	rate, ok := sumDeviceRates(series)
+	if !ok {
+		return nil, nil
+	}
+	return pointerTo(rate), nil
 }
 
 func applyServerMetadata(row *orgServerRow, tags map[string]string) {
@@ -218,14 +247,7 @@ func loadProjectServerRows(ctx *gin.Context, project *models.Project, dashboardI
 		if err != nil {
 			return nil, err
 		}
-		networkReceive, err := telemetry.MetricPointRepository.QueryTimeSeries(ctx, project.Id, models.MetricNameSystemNetworkIO, since, now, 1, "sum", map[string]string{"direction": "receive"}, "server_name", 0)
-		if err != nil {
-			return nil, err
-		}
-		networkTransmit, err := telemetry.MetricPointRepository.QueryTimeSeries(ctx, project.Id, models.MetricNameSystemNetworkIO, since, now, 1, "sum", map[string]string{"direction": "transmit"}, "server_name", 0)
-		if err != nil {
-			return nil, err
-		}
+		networkTo := now.Truncate(time.Minute).Add(-time.Millisecond)
 
 		for _, point := range latestOtel {
 			row := rows[point.ServerName]
@@ -239,11 +261,11 @@ func loadProjectServerRows(ctx *gin.Context, project *models.Project, dashboardI
 			if value, ok := lastSeriesValue(filesystemUsed, point.ServerName); ok {
 				row.DiskPct = pointerTo(otelFractionToPercent(value))
 			}
-			if value, ok := latestCounterRate(networkReceive[point.ServerName]); ok {
-				row.NetworkRxBps = pointerTo(value)
+			if row.NetworkRxBps, err = loadNetworkRate(ctx, project.Id, point.ServerName, "receive", since, networkTo); err != nil {
+				return nil, err
 			}
-			if value, ok := latestCounterRate(networkTransmit[point.ServerName]); ok {
-				row.NetworkTxBps = pointerTo(value)
+			if row.NetworkTxBps, err = loadNetworkRate(ctx, project.Id, point.ServerName, "transmit", since, networkTo); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -344,13 +366,15 @@ func (c *organizationOverviewController) Issues(ctx *gin.Context) {
 
 	issues := make([]orgIssueRow, 0)
 	var totalGroups int64
+	partial := false
 	for _, project := range projects {
 		span := traceway.StartSpan(ctx, fmt.Sprintf("org overview issues: project %s", project.Id))
 		groups, total, err := telemetry.ExceptionStackTraceRepository.FindGrouped(ctx, project.Id, from, now, 1, orgOverviewMaxIssues, "last_seen", "", "", false)
 		span.End()
 		if err != nil {
-			ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to load issues for project %s: %w", project.Id, err))
-			return
+			partial = true
+			traceway.CaptureException(traceway.NewStackTraceErrorf("failed to load issues for project %s: %w", project.Id, err))
+			continue
 		}
 		totalGroups += total
 		for _, group := range groups {
@@ -365,7 +389,7 @@ func (c *organizationOverviewController) Issues(ctx *gin.Context) {
 		issues = issues[:orgOverviewMaxIssues]
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"issues": issues, "totalGroups": totalGroups})
+	ctx.JSON(http.StatusOK, gin.H{"issues": issues, "totalGroups": totalGroups, "partial": partial})
 }
 
 type orgPageRow struct {
@@ -468,13 +492,15 @@ func (c *organizationOverviewController) Monitors(ctx *gin.Context) {
 	from := now.AddDate(0, 0, -30)
 
 	aggregates := make(map[int]*models.CheckAggregates)
+	partial := false
 	for _, projectId := range projectsWithChecks {
 		span := traceway.StartSpan(ctx, fmt.Sprintf("org overview monitors: project %s", projectId))
 		projectAggregates, err := telemetry.CheckResultRepository.AggregatesByProject(ctx, projectId, from, now)
 		span.End()
 		if err != nil {
-			ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to aggregate check results for project %s: %w", projectId, err))
-			return
+			partial = true
+			traceway.CaptureException(traceway.NewStackTraceErrorf("failed to aggregate check results for project %s: %w", projectId, err))
+			continue
 		}
 		for checkId, agg := range projectAggregates {
 			aggregates[checkId] = agg
@@ -490,5 +516,5 @@ func (c *organizationOverviewController) Monitors(ctx *gin.Context) {
 		})
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"checks": items})
+	ctx.JSON(http.StatusOK, gin.H{"checks": items, "partial": partial})
 }

@@ -154,7 +154,7 @@ func (c *contactMethodController) Create(ctx *gin.Context) {
 
 	var request contactMethodRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if smsUnavailable(request.MethodType) {
@@ -210,7 +210,7 @@ func (c *contactMethodController) Update(ctx *gin.Context) {
 	}
 	var request contactMethodRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if request.MethodType == "" {
@@ -280,7 +280,7 @@ func (c *contactMethodController) Verify(ctx *gin.Context) {
 		Code string `json:"code"`
 	}
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if method.Verified {

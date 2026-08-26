@@ -11,13 +11,14 @@ import (
 	"github.com/tracewayapp/traceway/backend/app/config"
 )
 
-func fakeSMTP(t *testing.T) (host string, port string, got *[]string) {
+func fakeSMTP(t *testing.T) (host string, port string, got *[]string, data *[]string) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	lines := []string{}
+	body := []string{}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -39,6 +40,8 @@ func fakeSMTP(t *testing.T) (host string, port string, got *[]string) {
 				if line == "." {
 					inData = false
 					fmt.Fprint(conn, "250 OK\r\n")
+				} else {
+					body = append(body, line)
 				}
 				continue
 			}
@@ -61,11 +64,11 @@ func fakeSMTP(t *testing.T) (host string, port string, got *[]string) {
 	}()
 	t.Cleanup(func() { ln.Close(); <-done })
 	h, p, _ := net.SplitHostPort(ln.Addr().String())
-	return h, p, &lines
+	return h, p, &lines, &body
 }
 
 func TestSendEmailUsesBareAddressesInTheEnvelope(t *testing.T) {
-	host, port, captured := fakeSMTP(t)
+	host, port, captured, _ := fakeSMTP(t)
 
 	prev := config.Config
 	config.Init(&config.Cfg{
@@ -98,6 +101,42 @@ func TestSendEmailUsesBareAddressesInTheEnvelope(t *testing.T) {
 		}
 		if (*captured)[i] != w {
 			t.Errorf("command %d:\n got %q\nwant %q", i, (*captured)[i], w)
+		}
+	}
+}
+
+func TestSendEmailEncodesDisplayNamesInHeaders(t *testing.T) {
+	host, port, _, body := fakeSMTP(t)
+
+	prev := config.Config
+	config.Init(&config.Cfg{
+		SMTPEnabled: "true", SMTPHost: host, SMTPPort: port,
+		SMTPFrom: "Zoë Alerts <alerts@example.com>",
+	})
+	t.Cleanup(func() { config.Init(prev) })
+
+	err := SendEmail(context.Background(), Email{
+		To:       []string{"Zoë Ops <ops@example.com>", "plain@example.com"},
+		Subject:  "Test",
+		Template: "invitation",
+		Title:    "Test",
+		Text:     "test",
+		Data:     invitationData{InviterName: "Dana", OrgName: "Acme"},
+	})
+	if err != nil {
+		t.Fatalf("SendEmail: %v", err)
+	}
+
+	headers := strings.Join(*body, "\n")
+	if strings.Contains(headers, "Zoë") {
+		t.Fatalf("raw UTF-8 reached a header:\n%s", headers)
+	}
+	for _, want := range []string{
+		"From: =?utf-8?q?Zo=C3=AB_Alerts?= <alerts@example.com>",
+		"To: =?utf-8?q?Zo=C3=AB_Ops?= <ops@example.com>, <plain@example.com>",
+	} {
+		if !strings.Contains(headers, want) {
+			t.Errorf("missing header line %q in:\n%s", want, headers)
 		}
 	}
 }

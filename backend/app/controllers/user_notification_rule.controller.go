@@ -62,7 +62,7 @@ func (c *userNotificationRuleController) Put(ctx *gin.Context) {
 
 	var request notificationRuleChains
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if len(request.High) > maxRuleStepsPerChain || len(request.Low) > maxRuleStepsPerChain {

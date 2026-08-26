@@ -47,7 +47,7 @@ func (e taskController) FindAllTasks(c *gin.Context) {
 
 	var request TaskSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -79,7 +79,7 @@ func (e taskController) FindGroupedByTaskName(c *gin.Context) {
 
 	var request TaskSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -123,7 +123,7 @@ func (e taskController) FindByTaskName(c *gin.Context) {
 
 	var request TaskInstancesRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 

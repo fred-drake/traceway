@@ -93,6 +93,21 @@ func sanitizeHeaderValues(values []string) []string {
 	return out
 }
 
+func headerAddress(raw string) string {
+	if parsed, err := netmail.ParseAddress(raw); err == nil {
+		return parsed.String()
+	}
+	return sanitizeHeaderValues([]string{raw})[0]
+}
+
+func headerAddresses(values []string) []string {
+	out := make([]string, len(values))
+	for i, v := range values {
+		out[i] = headerAddress(v)
+	}
+	return out
+}
+
 func envelopeAddresses(recipients []string) []string {
 	out := make([]string, 0, len(recipients))
 	for _, r := range recipients {
@@ -125,8 +140,8 @@ func SendEmail(ctx context.Context, email Email) error {
 
 	from := config.Config.SMTPFrom
 	var buf bytes.Buffer
-	fmt.Fprintf(&buf, "From: %s\r\n", from)
-	fmt.Fprintf(&buf, "To: %s\r\n", strings.Join(recipients, ", "))
+	fmt.Fprintf(&buf, "From: %s\r\n", headerAddress(from))
+	fmt.Fprintf(&buf, "To: %s\r\n", strings.Join(headerAddresses(recipients), ", "))
 	fmt.Fprintf(&buf, "Subject: %s\r\n", mime.QEncoding.Encode("utf-8", subject))
 	fmt.Fprintf(&buf, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
 	buf.WriteString("MIME-Version: 1.0\r\n")
@@ -326,6 +341,18 @@ func NotificationEmail(msg models.NotificationMessage, recipients []string) Emai
 	if msg.RuleType != "test" && msg.RuleName != "" {
 		email.Footer = fmt.Sprintf("You are receiving this because the notification rule %q fired.", msg.RuleName)
 	}
+	email.Text = plaintextBody(msg.Body, email.URL, email.Footer)
 
 	return email
+}
+
+func plaintextBody(body, url, footer string) string {
+	text := strings.TrimRight(body, "\n")
+	if url != "" && !strings.Contains(body, url) {
+		text += "\n\n" + url
+	}
+	if footer != "" {
+		text += "\n\n" + footer
+	}
+	return text
 }

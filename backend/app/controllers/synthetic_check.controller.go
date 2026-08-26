@@ -176,7 +176,7 @@ func (ctrl *syntheticCheckController) Overview(ctx *gin.Context) {
 	}
 	var req checkOverviewRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	from, to, ok := parseCheckRange(ctx, req.FromDate, req.ToDate)
@@ -211,7 +211,7 @@ func (ctrl *syntheticCheckController) Create(ctx *gin.Context) {
 	}
 	var req checkRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if message := validateCheckRequest(&req); message != "" {
@@ -328,7 +328,7 @@ func (ctrl *syntheticCheckController) Update(ctx *gin.Context) {
 	}
 	var req checkRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -482,7 +482,7 @@ func (ctrl *syntheticCheckController) Results(ctx *gin.Context) {
 	}
 	var req checkResultsRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	from, to, ok := parseCheckRange(ctx, req.FromDate, req.ToDate)
@@ -530,7 +530,7 @@ func (ctrl *syntheticCheckController) Series(ctx *gin.Context) {
 	}
 	var req checkSeriesRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	from, to, ok := parseCheckRange(ctx, req.FromDate, req.ToDate)

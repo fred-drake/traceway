@@ -76,7 +76,7 @@ func (s *server) addTools(srv *mcp.Server) {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:         "query_metrics",
 		OutputSchema: outSchema[client.QueryMetricsResponse](),
-		Description:  "Query time-bucketed metric series (aggregations: avg, sum, count, min, max). There is NO quantile aggregation: latency percentiles come from list_endpoints only. Host metrics from the Traceway OTel Agent live under system.* names; runtime names include go.gc_pause, mem.used_pcnt, go.go_routines. OTLP histogram metrics are stored as two series, <name>.avg and <name>.count. An unknown name returns an empty series cleanly, so probing names is safe.",
+		Description:  "Query time-bucketed metric series (aggregations: avg, sum, count, min, max). There is NO quantile aggregation: latency percentiles come from list_endpoints only. Host metrics from the Traceway OTel Agent live under system.* names; runtime names include go.gc_pause, mem.used_pcnt, go.go_routines. OTLP histogram metrics are stored as two series, <name>.avg and <name>.count. An unknown name returns an empty series cleanly, so probing names is safe. A grouped query is cut to the first 200 groups (alphabetical) and that result carries truncatedGroups: true, while the top-level intervalMinutes is the bucket size actually used after the server widens it so no series exceeds 2000 points.",
 		Annotations:  readOnly(),
 	}, s.queryMetrics)
 

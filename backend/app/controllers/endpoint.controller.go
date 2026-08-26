@@ -77,7 +77,7 @@ func (e endpointController) FindAllEndpoints(c *gin.Context) {
 
 	var request EndpointSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -109,7 +109,7 @@ func (e endpointController) FindGroupedByEndpoint(c *gin.Context) {
 
 	var request EndpointSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -159,7 +159,7 @@ func (e endpointController) FindByEndpoint(c *gin.Context) {
 
 	var request EndpointInstancesRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -200,7 +200,7 @@ func (e endpointController) GetStackedChart(c *gin.Context) {
 
 	var request EndpointStackedChartRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -278,7 +278,7 @@ func (e endpointController) SetSlowEndpoint(c *gin.Context) {
 
 	var request SetSlowEndpointRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 

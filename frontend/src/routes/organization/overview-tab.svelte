@@ -16,6 +16,7 @@
 	import Sparkline from '$lib/components/dashboard/sparkline.svelte';
 	import type { MetricTrendPoint } from '$lib/types/dashboard';
 	import type { OncallPage } from '$lib/state/oncall.svelte';
+	import PartialNotice from './partial-notice.svelte';
 	import {
 		Activity,
 		ArrowDown,
@@ -626,14 +627,11 @@
 			</div>
 
 			{#if serversPartial || (serversError && servers.length > 0)}
-				<div
-					class="flex items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300"
-				>
-					<TriangleAlert class="size-4 shrink-0" />
-					{serversPartial
+				<PartialNotice
+					message={serversPartial
 						? 'Some projects could not be read. The instances shown are still current.'
 						: 'The last refresh failed. Showing the most recent snapshot.'}
-				</div>
+				/>
 			{/if}
 
 			{#if serversLoading && servers.length === 0}

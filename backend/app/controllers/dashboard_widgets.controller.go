@@ -28,7 +28,7 @@ func (c *dashboardsController) AddWidget(ctx *gin.Context) {
 	limitRequestBody(ctx)
 	var req AddWidgetRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -97,7 +97,7 @@ func (c *dashboardsController) UpdateWidget(ctx *gin.Context) {
 	limitRequestBody(ctx)
 	var req AddWidgetRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -191,7 +191,7 @@ type ReorderWidgetsRequest struct {
 func (c *dashboardsController) ReorderWidgets(ctx *gin.Context) {
 	var req ReorderWidgetsRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -422,7 +422,7 @@ func (c *dashboardsController) ReorderStarred(ctx *gin.Context) {
 
 	var req ReorderStarredRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -488,7 +488,7 @@ func (c *dashboardsController) UpdateStarredLayout(ctx *gin.Context) {
 
 	var req UpdateStarredLayoutRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 

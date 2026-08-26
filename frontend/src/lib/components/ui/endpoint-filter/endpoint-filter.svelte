@@ -8,12 +8,14 @@
 		rootValue?: string;
 		methodValue?: string;
 		class?: string;
+		onChange?: (value: string) => void;
 	};
 
 	let {
 		rootValue = $bindable('all'),
 		methodValue = $bindable('all'),
-		class: className = 'sm:rounded-none sm:border-r-0'
+		class: className = 'sm:rounded-none sm:border-r-0',
+		onChange
 	}: Props = $props();
 
 	const METHOD_COLORS: Record<string, string> = {
@@ -31,7 +33,7 @@
 	);
 </script>
 
-<Select.Root type="single" bind:value={methodValue}>
+<Select.Root type="single" bind:value={methodValue} onValueChange={(v) => onChange?.(v ?? '')}>
 	<Select.Trigger
 		aria-label="Filter by HTTP method"
 		class={cn('h-9 w-[130px] shrink-0 shadow-none', className)}
@@ -58,4 +60,8 @@
 	</Select.Content>
 </Select.Root>
 
-<RootFilter bind:value={rootValue} class={cn('h-9 w-[110px] shrink-0 shadow-none', className)} />
+<RootFilter
+	bind:value={rootValue}
+	class={cn('h-9 w-[110px] shrink-0 shadow-none', className)}
+	{onChange}
+/>

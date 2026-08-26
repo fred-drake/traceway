@@ -61,6 +61,7 @@ func newAdmissionGate(capacity int, wait time.Duration, message string, onReject
 				return
 			}
 		}
+		restartBodyGuard(c)
 		defer func() { <-slots }()
 		c.Next()
 	}

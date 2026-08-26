@@ -179,7 +179,7 @@ func (ctrl *syntheticRunnerController) Result(ctx *gin.Context) {
 	ctx.Request.Body = http.MaxBytesReader(ctx.Writer, ctx.Request.Body, runnerResultBodyLimit)
 	var req runnerResultRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 	if req.Status != models.CheckResultUp && req.Status != models.CheckResultDown {

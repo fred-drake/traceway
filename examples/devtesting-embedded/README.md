@@ -27,7 +27,7 @@ ORCAROUTER_MODEL=orcarouter/auto
 # OPENROUTER_MODEL=anthropic/claude-sonnet-5
 ```
 
-When `ORCAROUTER_API_KEY` is set the chat routes through [OrcaRouter](https://www.orcarouter.ai) (`https://api.orcarouter.ai/v1`); otherwise it falls back to OpenRouter. It also runs gateway-level, zero-trust security for AI agents on the same endpoint — screening every prompt/response and governing every tool call on a default-deny basis, with no application code changes.
+When `ORCAROUTER_API_KEY` is set the chat routes through [OrcaRouter](https://www.orcarouter.ai) (`https://api.orcarouter.ai/v1`); otherwise it falls back to OpenRouter.
 
 How it maps to Traceway:
 

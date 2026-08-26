@@ -90,6 +90,10 @@ export function isFrontendFramework(fw: Framework): boolean {
 	return FRONTEND_FRAMEWORKS.includes(fw);
 }
 
+export function isBackendFramework(fw: Framework): boolean {
+	return !isFrontendFramework(fw);
+}
+
 export function isJsFramework(fw: Framework): boolean {
 	return JS_FRAMEWORKS.includes(fw);
 }

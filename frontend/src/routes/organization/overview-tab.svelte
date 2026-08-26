@@ -69,7 +69,10 @@
 		servers: OrgServerRow[];
 	}
 
-	let { organizationId }: { organizationId: number } = $props();
+	let {
+		organizationId,
+		hasBackendProjects
+	}: { organizationId: number; hasBackendProjects: boolean } = $props();
 
 	const FRESH_MS = 3 * 60 * 1000;
 	const REFRESH_MS = 60 * 1000;
@@ -101,51 +104,68 @@
 	let loadGeneration = 0;
 	let activeOrganizationId: number | null = null;
 
-	async function loadServers(orgId: number, generation: number, background: boolean) {
+	async function loadServers(
+		orgId: number,
+		generation: number,
+		background: boolean
+	): Promise<boolean> {
 		if (!background) serversLoading = true;
 		serversError = '';
 		try {
 			const response = await api.get(`/organizations/${orgId}/overview/servers`);
-			if (generation !== loadGeneration) return;
+			if (generation !== loadGeneration) return false;
 			servers = response.servers || [];
 			serversPartial = response.partial === true;
-			refreshedAt = response.refreshedAt || new Date().toISOString();
 			now = Date.now();
+			return true;
 		} catch (e) {
-			if (generation !== loadGeneration) return;
+			if (generation !== loadGeneration) return false;
 			serversError = getErrorMessage(e) || 'Failed to load instance health';
+			return false;
 		} finally {
 			if (generation === loadGeneration) serversLoading = false;
 		}
 	}
 
-	async function loadIssues(orgId: number, generation: number, background: boolean) {
+	async function loadIssues(
+		orgId: number,
+		generation: number,
+		background: boolean
+	): Promise<boolean> {
 		if (!background) issuesLoading = true;
 		issuesError = '';
 		try {
 			const response = await api.get(`/organizations/${orgId}/overview/issues`);
-			if (generation !== loadGeneration) return;
+			if (generation !== loadGeneration) return false;
 			totalGroups = response.totalGroups || 0;
+			return true;
 		} catch (e) {
-			if (generation !== loadGeneration) return;
+			if (generation !== loadGeneration) return false;
 			issuesError = getErrorMessage(e) || 'Failed to load issues';
+			return false;
 		} finally {
 			if (generation === loadGeneration) issuesLoading = false;
 		}
 	}
 
-	async function loadPages(orgId: number, generation: number, background: boolean) {
+	async function loadPages(
+		orgId: number,
+		generation: number,
+		background: boolean
+	): Promise<boolean> {
 		if (!background) pagesLoading = true;
 		pagesError = '';
 		try {
 			const response = await api.get(`/organizations/${orgId}/overview/pages`);
-			if (generation !== loadGeneration) return;
+			if (generation !== loadGeneration) return false;
 			pages = response.pages || [];
 			openPagesCount = response.openPagesCount || 0;
 			downMonitorsCount = response.downMonitorsCount || 0;
+			return true;
 		} catch (e) {
-			if (generation !== loadGeneration) return;
+			if (generation !== loadGeneration) return false;
 			pagesError = getErrorMessage(e) || 'Failed to load on-call pages';
+			return false;
 		} finally {
 			if (generation === loadGeneration) pagesLoading = false;
 		}
@@ -153,16 +173,24 @@
 
 	type RefreshMode = 'initial' | 'background' | 'manual';
 
-	async function refreshOverview(orgId: number, mode: RefreshMode) {
+	async function refreshOverview(orgId: number, mode: RefreshMode, includeServers: boolean) {
 		const generation = ++loadGeneration;
 		const background = mode !== 'initial';
 		if (mode === 'manual') refreshing = true;
-		await Promise.all([
-			loadServers(orgId, generation, background),
+		const loads = [
 			loadIssues(orgId, generation, background),
 			loadPages(orgId, generation, background)
-		]);
-		if (generation === loadGeneration) refreshing = false;
+		];
+		if (includeServers) {
+			loads.push(loadServers(orgId, generation, background));
+		} else {
+			servers = [];
+			serversLoading = false;
+		}
+		const succeeded = await Promise.all(loads);
+		if (generation !== loadGeneration) return;
+		refreshing = false;
+		if (succeeded.some(Boolean)) refreshedAt = new Date().toISOString();
 	}
 
 	$effect(() => {
@@ -182,8 +210,12 @@
 			groupMode = 'project';
 			groupPreferenceInitializedFor = null;
 		}
-		void refreshOverview(orgId, 'initial');
-		const timer = window.setInterval(() => void refreshOverview(orgId, 'background'), REFRESH_MS);
+		const includeServers = hasBackendProjects;
+		void refreshOverview(orgId, 'initial', includeServers);
+		const timer = window.setInterval(
+			() => void refreshOverview(orgId, 'background', includeServers),
+			REFRESH_MS
+		);
 		return () => window.clearInterval(timer);
 	});
 
@@ -373,7 +405,17 @@
 		return type.charAt(0).toUpperCase() + type.slice(1);
 	}
 
-	const fleetHeadline = $derived.by(() => {
+	const pulseAttention = $derived(hasBackendProjects ? attentionCount > 0 : openPagesCount > 0);
+
+	const pulseHeadline = $derived.by(() => {
+		if (!hasBackendProjects) {
+			if (pagesLoading && pages.length === 0) return 'Checking active response';
+			if (pagesError && pages.length === 0) return 'Response signal unavailable';
+			if (openPagesCount > 0) {
+				return `${openPagesCount} ${openPagesCount === 1 ? 'page needs' : 'pages need'} a response`;
+			}
+			return 'Nobody is being paged';
+		}
 		if (serversLoading && servers.length === 0) return 'Reading the fleet heartbeat';
 		if (serversError && servers.length === 0) return 'Fleet signal unavailable';
 		if (servers.length === 0) return 'No instance telemetry yet';
@@ -394,11 +436,11 @@
 		>
 			<div class="flex min-w-0 items-start gap-3.5">
 				<div
-					class="mt-0.5 grid size-10 shrink-0 place-items-center rounded-xl {attentionCount > 0
+					class="mt-0.5 grid size-10 shrink-0 place-items-center rounded-xl {pulseAttention
 						? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
 						: 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'}"
 				>
-					{#if attentionCount > 0}
+					{#if pulseAttention}
 						<TriangleAlert class="size-5" />
 					{:else}
 						<Activity class="size-5" />
@@ -409,13 +451,15 @@
 						Operational pulse
 					</div>
 					<h2 id="fleet-pulse" class="mt-1 text-xl font-semibold tracking-tight">
-						{fleetHeadline}
+						{pulseHeadline}
 					</h2>
 					<p class="mt-1 text-sm text-muted-foreground">
 						{#if refreshedAt}
 							Updated {formatRelativeTimeAgo(refreshedAt)} · refreshes every minute
-						{:else}
+						{:else if hasBackendProjects}
 							Live resource health across every project
+						{:else}
+							Issues and on-call response across every project
 						{/if}
 					</p>
 				</div>
@@ -424,44 +468,48 @@
 				variant="outline"
 				size="sm"
 				disabled={refreshing}
-				onclick={() => void refreshOverview(organizationId, 'manual')}
+				onclick={() => void refreshOverview(organizationId, 'manual', hasBackendProjects)}
 			>
 				<RefreshCw class="size-4 {refreshing ? 'animate-spin' : ''}" />
 				Refresh
 			</Button>
 		</div>
 
-		<div class="grid grid-cols-2 border-t sm:grid-cols-3 xl:grid-cols-6">
-			<div class="border-r border-b px-5 py-4 xl:border-b-0">
-				<div class="text-xs text-muted-foreground">Reporting now</div>
-				<div
-					class="mt-1 font-mono text-xl font-semibold text-emerald-600 tabular-nums dark:text-emerald-400"
-				>
-					{serversLoading && servers.length === 0 ? '—' : freshCount}
+		<div
+			class="grid grid-cols-2 border-t {hasBackendProjects ? 'sm:grid-cols-3 xl:grid-cols-6' : ''}"
+		>
+			{#if hasBackendProjects}
+				<div class="border-r border-b px-5 py-4 xl:border-b-0">
+					<div class="text-xs text-muted-foreground">Reporting now</div>
+					<div
+						class="mt-1 font-mono text-xl font-semibold text-emerald-600 tabular-nums dark:text-emerald-400"
+					>
+						{serversLoading && servers.length === 0 ? '—' : freshCount}
+					</div>
 				</div>
-			</div>
-			<div class="border-r border-b px-5 py-4 sm:border-r xl:border-b-0">
-				<div class="text-xs text-muted-foreground">Needs attention</div>
-				<div
-					class="mt-1 font-mono text-xl font-semibold tabular-nums {attentionCount > 0
-						? 'text-amber-600 dark:text-amber-400'
-						: ''}"
-				>
-					{serversLoading && servers.length === 0 ? '—' : attentionCount}
+				<div class="border-r border-b px-5 py-4 sm:border-r xl:border-b-0">
+					<div class="text-xs text-muted-foreground">Needs attention</div>
+					<div
+						class="mt-1 font-mono text-xl font-semibold tabular-nums {attentionCount > 0
+							? 'text-amber-600 dark:text-amber-400'
+							: ''}"
+					>
+						{serversLoading && servers.length === 0 ? '—' : attentionCount}
+					</div>
 				</div>
-			</div>
-			<div class="border-r border-b px-5 py-4 sm:border-r-0 xl:border-r xl:border-b-0">
-				<div class="text-xs text-muted-foreground">Stale signals</div>
-				<div class="mt-1 font-mono text-xl font-semibold tabular-nums">
-					{serversLoading && servers.length === 0 ? '—' : staleCount}
+				<div class="border-r border-b px-5 py-4 sm:border-r-0 xl:border-r xl:border-b-0">
+					<div class="text-xs text-muted-foreground">Stale signals</div>
+					<div class="mt-1 font-mono text-xl font-semibold tabular-nums">
+						{serversLoading && servers.length === 0 ? '—' : staleCount}
+					</div>
 				</div>
-			</div>
-			<div class="border-r border-b px-5 py-4 sm:border-b-0 xl:border-r">
-				<div class="text-xs text-muted-foreground">Network I/O</div>
-				<div class="mt-1 font-mono text-xl font-semibold tabular-nums">
-					{formatTotalNetwork(totalNetworkBps)}
+				<div class="border-r border-b px-5 py-4 sm:border-b-0 xl:border-r">
+					<div class="text-xs text-muted-foreground">Network I/O</div>
+					<div class="mt-1 font-mono text-xl font-semibold tabular-nums">
+						{formatTotalNetwork(totalNetworkBps)}
+					</div>
 				</div>
-			</div>
+			{/if}
 			<a
 				href={organizationTabHref('issues')}
 				class="group border-r px-5 py-4 transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
@@ -474,304 +522,329 @@
 					{issuesLoading || issuesError ? '—' : totalGroups}
 				</div>
 			</a>
-			<a
-				href={organizationTabHref('monitors')}
-				class="group px-5 py-4 transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
-			>
-				<div class="flex items-center justify-between text-xs text-muted-foreground">
-					Active response
-					<ArrowRight class="size-3.5 opacity-0 transition-opacity group-hover:opacity-100" />
-				</div>
-				<div
-					class="mt-1 font-mono text-xl font-semibold tabular-nums {openPagesCount +
-						downMonitorsCount >
-					0
-						? 'text-rose-600 dark:text-rose-400'
-						: ''}"
+			{#if hasBackendProjects}
+				<a
+					href={organizationTabHref('monitors')}
+					class="group px-5 py-4 transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
 				>
-					{pagesLoading || pagesError ? '—' : openPagesCount + downMonitorsCount}
-				</div>
-			</a>
-		</div>
-	</section>
-
-	<section class="space-y-3" aria-labelledby="instances-heading">
-		<div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-			<div>
-				<div class="flex items-center gap-2">
-					<h2 id="instances-heading" class="text-lg font-semibold">Instances</h2>
-					{#if !serversLoading}
-						<span
-							class="rounded-full bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground tabular-nums"
-							>{servers.length}</span
-						>
-					{/if}
-				</div>
-				<p class="mt-0.5 text-sm text-muted-foreground">
-					CPU, memory, storage, and network from the latest 30 minutes.
-				</p>
-			</div>
-
-			{#if servers.length > 0}
-				<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
-					<div class="relative min-w-0 sm:w-56">
-						<Search
-							class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
-						/>
-						<Input bind:value={searchQuery} placeholder="Find an instance" class="h-9 pl-9" />
+					<div class="flex items-center justify-between text-xs text-muted-foreground">
+						Active response
+						<ArrowRight class="size-3.5 opacity-0 transition-opacity group-hover:opacity-100" />
 					</div>
-					<select
-						bind:value={fleetFilter}
-						aria-label="Filter instances by health"
-						class="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+					<div
+						class="mt-1 font-mono text-xl font-semibold tabular-nums {openPagesCount +
+							downMonitorsCount >
+						0
+							? 'text-rose-600 dark:text-rose-400'
+							: ''}"
 					>
-						<option value="all">All health states</option>
-						<option value="attention">Needs attention</option>
-						<option value="stale">Stale</option>
-						<option value="healthy">Healthy</option>
-					</select>
-					{#if projectOptions.length > 1}
-						<select
-							bind:value={projectFilter}
-							aria-label="Filter instances by project"
-							class="h-9 max-w-48 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
-						>
-							<option value="all">All projects</option>
-							{#each projectOptions as project (project.id)}
-								<option value={project.id}>{project.name}</option>
-							{/each}
-						</select>
-					{/if}
-					<select
-						bind:value={groupMode}
-						aria-label="Group instances"
-						class="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						{pagesLoading || pagesError ? '—' : openPagesCount + downMonitorsCount}
+					</div>
+				</a>
+			{:else}
+				<div class="px-5 py-4">
+					<div class="text-xs text-muted-foreground">Active response</div>
+					<div
+						class="mt-1 font-mono text-xl font-semibold tabular-nums {openPagesCount > 0
+							? 'text-rose-600 dark:text-rose-400'
+							: ''}"
 					>
-						<option value="project">Group by project</option>
-						{#if hasKubernetesMetadata}
-							<option value="cluster">Group by Kubernetes cluster</option>
-						{/if}
-						<option value="none">No grouping</option>
-					</select>
+						{pagesLoading || pagesError ? '—' : openPagesCount}
+					</div>
 				</div>
 			{/if}
 		</div>
+	</section>
 
-		{#if serversPartial || (serversError && servers.length > 0)}
-			<div
-				class="flex items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300"
-			>
-				<TriangleAlert class="size-4 shrink-0" />
-				{serversPartial
-					? 'Some projects could not be read. The instances shown are still current.'
-					: 'The last refresh failed. Showing the most recent snapshot.'}
-			</div>
-		{/if}
-
-		{#if serversLoading && servers.length === 0}
-			<div class="flex h-48 items-center justify-center rounded-xl border">
-				<LoadingCircle size="lg" />
-			</div>
-		{:else if serversError && servers.length === 0}
-			<div
-				class="flex flex-col items-center justify-center gap-3 rounded-xl border py-12 text-center"
-			>
-				<TriangleAlert class="size-6 text-rose-500" />
+	{#if hasBackendProjects}
+		<section class="space-y-3" aria-labelledby="instances-heading">
+			<div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
 				<div>
-					<p class="font-medium">Instance health could not be loaded</p>
-					<p class="mt-1 text-sm text-muted-foreground">{serversError}</p>
-				</div>
-				<Button
-					variant="outline"
-					size="sm"
-					onclick={() => void refreshOverview(organizationId, 'initial')}>Retry</Button
-				>
-			</div>
-		{:else if servers.length === 0}
-			<div
-				class="flex flex-col items-center justify-center rounded-xl border border-dashed py-12 text-center"
-			>
-				<div class="grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground">
-					<Server class="size-5" />
-				</div>
-				<p class="mt-3 font-medium">No instance telemetry in the last 30 minutes</p>
-				<p class="mt-1 max-w-md text-sm text-muted-foreground">
-					Install the Traceway OTel Agent on a host, or send server metrics with a unique service
-					name.
-				</p>
-			</div>
-		{:else if visibleServers.length === 0}
-			<div class="rounded-xl border border-dashed py-10 text-center">
-				<p class="font-medium">No instances match these filters</p>
-				<button
-					class="mt-2 text-sm font-medium text-primary hover:underline"
-					onclick={() => {
-						searchQuery = '';
-						fleetFilter = 'all';
-						projectFilter = 'all';
-					}}
-				>
-					Clear filters
-				</button>
-			</div>
-		{:else}
-			<div class="overflow-hidden rounded-xl border bg-card shadow-xs">
-				<div
-					class="hidden grid-cols-[minmax(250px,1.7fr)_104px_104px_104px_minmax(155px,0.9fr)_125px_28px] items-center border-b bg-muted/30 px-4 py-2.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase lg:grid"
-				>
-					<div>Instance</div>
-					<div class="text-center">CPU</div>
-					<div class="text-center">Memory</div>
-					<div class="text-center">Disk</div>
-					<div>Network</div>
-					<div>Last signal</div>
-					<div></div>
+					<div class="flex items-center gap-2">
+						<h2 id="instances-heading" class="text-lg font-semibold">Instances</h2>
+						{#if !serversLoading}
+							<span
+								class="rounded-full bg-muted px-2 py-0.5 font-mono text-xs text-muted-foreground tabular-nums"
+								>{servers.length}</span
+							>
+						{/if}
+					</div>
+					<p class="mt-0.5 text-sm text-muted-foreground">
+						CPU, memory, storage, and network from the latest 30 minutes.
+					</p>
 				</div>
 
-				{#each serverGroups as group (group.key)}
-					<div
-						class="flex items-center justify-between border-b bg-muted/20 px-4 py-2.5 last:border-b-0"
-					>
-						<div class="flex min-w-0 items-center gap-2">
-							{#if groupMode === 'cluster' && group.key !== 'cluster:ungrouped'}
-								<Boxes class="size-4 shrink-0 text-muted-foreground" />
-							{:else}
-								<Cloud class="size-4 shrink-0 text-muted-foreground" />
-							{/if}
-							<span class="truncate text-sm font-semibold">{group.label}</span>
-							{#if group.subtitle}
-								<span class="hidden text-xs text-muted-foreground sm:inline">{group.subtitle}</span>
-							{/if}
+				{#if servers.length > 0}
+					<div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+						<div class="relative min-w-0 sm:w-56">
+							<Search
+								class="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground"
+							/>
+							<Input bind:value={searchQuery} placeholder="Find an instance" class="h-9 pl-9" />
 						</div>
-						<span class="font-mono text-xs text-muted-foreground tabular-nums"
-							>{group.servers.length}</span
+						<select
+							bind:value={fleetFilter}
+							aria-label="Filter instances by health"
+							class="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
 						>
+							<option value="all">All health states</option>
+							<option value="attention">Needs attention</option>
+							<option value="stale">Stale</option>
+							<option value="healthy">Healthy</option>
+						</select>
+						{#if projectOptions.length > 1}
+							<select
+								bind:value={projectFilter}
+								aria-label="Filter instances by project"
+								class="h-9 max-w-48 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+							>
+								<option value="all">All projects</option>
+								{#each projectOptions as project (project.id)}
+									<option value={project.id}>{project.name}</option>
+								{/each}
+							</select>
+						{/if}
+						<select
+							bind:value={groupMode}
+							aria-label="Group instances"
+							class="h-9 rounded-md border border-input bg-background px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring"
+						>
+							<option value="project">Group by project</option>
+							{#if hasKubernetesMetadata}
+								<option value="cluster">Group by Kubernetes cluster</option>
+							{/if}
+							<option value="none">No grouping</option>
+						</select>
+					</div>
+				{/if}
+			</div>
+
+			{#if serversPartial || (serversError && servers.length > 0)}
+				<div
+					class="flex items-center gap-2 rounded-lg border border-amber-500/25 bg-amber-500/5 px-4 py-2.5 text-sm text-amber-700 dark:text-amber-300"
+				>
+					<TriangleAlert class="size-4 shrink-0" />
+					{serversPartial
+						? 'Some projects could not be read. The instances shown are still current.'
+						: 'The last refresh failed. Showing the most recent snapshot.'}
+				</div>
+			{/if}
+
+			{#if serversLoading && servers.length === 0}
+				<div class="flex h-48 items-center justify-center rounded-xl border">
+					<LoadingCircle size="lg" />
+				</div>
+			{:else if serversError && servers.length === 0}
+				<div
+					class="flex flex-col items-center justify-center gap-3 rounded-xl border py-12 text-center"
+				>
+					<TriangleAlert class="size-6 text-rose-500" />
+					<div>
+						<p class="font-medium">Instance health could not be loaded</p>
+						<p class="mt-1 text-sm text-muted-foreground">{serversError}</p>
+					</div>
+					<Button
+						variant="outline"
+						size="sm"
+						onclick={() => void refreshOverview(organizationId, 'initial', hasBackendProjects)}
+						>Retry</Button
+					>
+				</div>
+			{:else if servers.length === 0}
+				<div
+					class="flex flex-col items-center justify-center rounded-xl border border-dashed py-12 text-center"
+				>
+					<div class="grid size-11 place-items-center rounded-xl bg-muted text-muted-foreground">
+						<Server class="size-5" />
+					</div>
+					<p class="mt-3 font-medium">No instance telemetry in the last 30 minutes</p>
+					<p class="mt-1 max-w-md text-sm text-muted-foreground">
+						Install the Traceway OTel Agent on a host, or send server metrics with a unique service
+						name.
+					</p>
+				</div>
+			{:else if visibleServers.length === 0}
+				<div class="rounded-xl border border-dashed py-10 text-center">
+					<p class="font-medium">No instances match these filters</p>
+					<button
+						class="mt-2 text-sm font-medium text-primary hover:underline"
+						onclick={() => {
+							searchQuery = '';
+							fleetFilter = 'all';
+							projectFilter = 'all';
+						}}
+					>
+						Clear filters
+					</button>
+				</div>
+			{:else}
+				<div class="overflow-hidden rounded-xl border bg-card shadow-xs">
+					<div
+						class="hidden grid-cols-[minmax(250px,1.7fr)_104px_104px_104px_minmax(155px,0.9fr)_125px_28px] items-center border-b bg-muted/30 px-4 py-2.5 text-[11px] font-semibold tracking-wider text-muted-foreground uppercase lg:grid"
+					>
+						<div>Instance</div>
+						<div class="text-center">CPU</div>
+						<div class="text-center">Memory</div>
+						<div class="text-center">Disk</div>
+						<div>Network</div>
+						<div>Last signal</div>
+						<div></div>
 					</div>
 
-					{#each group.servers as server (server.projectId + server.serverName)}
-						{@const state = instanceState(server)}
-						<a
-							href={instanceHref(server)}
-							class="group/instance grid gap-4 border-b px-4 py-4 transition-colors last:border-b-0 hover:bg-muted/35 focus-visible:bg-muted/35 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset lg:grid-cols-[minmax(250px,1.7fr)_104px_104px_104px_minmax(155px,0.9fr)_125px_28px] lg:items-center lg:gap-0 lg:py-3"
+					{#each serverGroups as group (group.key)}
+						<div
+							class="flex items-center justify-between border-b bg-muted/20 px-4 py-2.5 last:border-b-0"
 						>
-							<div class="flex min-w-0 items-center gap-3">
-								<div
-									class="relative grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground"
-								>
-									{#if server.k8sClusterName}
-										<Boxes class="size-4" />
-									{:else}
-										<Server class="size-4" />
-									{/if}
-									<span
-										class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-card {state ===
-										'healthy'
-											? 'bg-emerald-500'
-											: state === 'warning'
-												? 'bg-amber-500'
-												: state === 'critical'
-													? 'bg-rose-500'
-													: 'bg-muted-foreground'}"
-									></span>
-								</div>
-								<div class="min-w-0 flex-1">
-									<div class="flex min-w-0 items-center gap-2">
-										<span class="truncate font-mono text-sm font-semibold">{server.serverName}</span
-										>
-										<span
-											class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset {stateClasses(
-												state
-											)}">{stateLabel(state)}</span
-										>
-									</div>
+							<div class="flex min-w-0 items-center gap-2">
+								{#if groupMode === 'cluster' && group.key !== 'cluster:ungrouped'}
+									<Boxes class="size-4 shrink-0 text-muted-foreground" />
+								{:else}
+									<Cloud class="size-4 shrink-0 text-muted-foreground" />
+								{/if}
+								<span class="truncate text-sm font-semibold">{group.label}</span>
+								{#if group.subtitle}
+									<span class="hidden text-xs text-muted-foreground sm:inline"
+										>{group.subtitle}</span
+									>
+								{/if}
+							</div>
+							<span class="font-mono text-xs text-muted-foreground tabular-nums"
+								>{group.servers.length}</span
+							>
+						</div>
+
+						{#each group.servers as server (server.projectId + server.serverName)}
+							{@const state = instanceState(server)}
+							<a
+								href={instanceHref(server)}
+								class="group/instance grid gap-4 border-b px-4 py-4 transition-colors last:border-b-0 hover:bg-muted/35 focus-visible:bg-muted/35 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset lg:grid-cols-[minmax(250px,1.7fr)_104px_104px_104px_minmax(155px,0.9fr)_125px_28px] lg:items-center lg:gap-0 lg:py-3"
+							>
+								<div class="flex min-w-0 items-center gap-3">
 									<div
-										class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground"
+										class="relative grid size-9 shrink-0 place-items-center rounded-lg bg-muted text-muted-foreground"
 									>
-										{#if groupMode !== 'project'}<span class="truncate">{server.projectName}</span
-											>{/if}
-										{#if server.hostName && server.hostName !== server.serverName}<span
-												class="font-mono">{server.hostName}</span
-											>{/if}
-										{#if osLabel(server)}<span title={server.osDescription || undefined}
-												>{osLabel(server)}{#if server.hostArch}
-													· {server.hostArch}{/if}</span
-											>{/if}
-										{#if server.cloudRegion}<span>{server.cloudRegion}</span>{/if}
-										{#if server.k8sNodeName}<span>node {server.k8sNodeName}</span>{/if}
-										<span>{server.telemetrySource === 'otel' ? 'OTel Agent' : 'SDK metrics'}</span>
+										{#if server.k8sClusterName}
+											<Boxes class="size-4" />
+										{:else}
+											<Server class="size-4" />
+										{/if}
+										<span
+											class="absolute -right-0.5 -bottom-0.5 size-2.5 rounded-full border-2 border-card {state ===
+											'healthy'
+												? 'bg-emerald-500'
+												: state === 'warning'
+													? 'bg-amber-500'
+													: state === 'critical'
+														? 'bg-rose-500'
+														: 'bg-muted-foreground'}"
+										></span>
+									</div>
+									<div class="min-w-0 flex-1">
+										<div class="flex min-w-0 items-center gap-2">
+											<span class="truncate font-mono text-sm font-semibold"
+												>{server.serverName}</span
+											>
+											<span
+												class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ring-1 ring-inset {stateClasses(
+													state
+												)}">{stateLabel(state)}</span
+											>
+										</div>
+										<div
+											class="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-muted-foreground"
+										>
+											{#if groupMode !== 'project'}<span class="truncate">{server.projectName}</span
+												>{/if}
+											{#if server.hostName && server.hostName !== server.serverName}<span
+													class="font-mono">{server.hostName}</span
+												>{/if}
+											{#if osLabel(server)}<span title={server.osDescription || undefined}
+													>{osLabel(server)}{#if server.hostArch}
+														· {server.hostArch}{/if}</span
+												>{/if}
+											{#if server.cloudRegion}<span>{server.cloudRegion}</span>{/if}
+											{#if server.k8sNodeName}<span>node {server.k8sNodeName}</span>{/if}
+											<span>{server.telemetrySource === 'otel' ? 'OTel Agent' : 'SDK metrics'}</span
+											>
+										</div>
 									</div>
 								</div>
-							</div>
 
-							<div class="grid grid-cols-3 gap-3 lg:contents">
-								<div class="flex flex-col items-center gap-1">
-									<span
-										class="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase lg:hidden"
-										>CPU</span
-									>
-									<ResourceRing label="CPU" value={server.cpuPct} size="sm" />
-									{#if server.trend.length > 1}
-										<div class="hidden h-3 w-14 lg:block">
-											<Sparkline
-												data={toTrendPoints(server.trend)}
-												color={getServerColor(server.serverName, allServerNames)}
-												height={12}
-											/>
-										</div>
-									{/if}
+								<div class="grid grid-cols-3 gap-3 lg:contents">
+									<div class="flex flex-col items-center gap-1">
+										<span
+											class="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase lg:hidden"
+											>CPU</span
+										>
+										<ResourceRing label="CPU" value={server.cpuPct} size="sm" />
+										{#if server.trend.length > 1}
+											<div class="hidden h-3 w-14 lg:block">
+												<Sparkline
+													data={toTrendPoints(server.trend)}
+													color={getServerColor(server.serverName, allServerNames)}
+													height={12}
+												/>
+											</div>
+										{/if}
+									</div>
+									<div class="flex flex-col items-center gap-1">
+										<span
+											class="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase lg:hidden"
+											>Memory</span
+										>
+										<ResourceRing
+											label="Memory"
+											value={server.memoryPct}
+											warningAt={85}
+											size="sm"
+										/>
+									</div>
+									<div class="flex flex-col items-center gap-1">
+										<span
+											class="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase lg:hidden"
+											>Disk</span
+										>
+										<ResourceRing
+											label="Disk"
+											value={server.diskPct}
+											warningAt={80}
+											criticalAt={90}
+											size="sm"
+										/>
+									</div>
 								</div>
-								<div class="flex flex-col items-center gap-1">
-									<span
-										class="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase lg:hidden"
-										>Memory</span
-									>
-									<ResourceRing label="Memory" value={server.memoryPct} warningAt={85} size="sm" />
-								</div>
-								<div class="flex flex-col items-center gap-1">
-									<span
-										class="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase lg:hidden"
-										>Disk</span
-									>
-									<ResourceRing
-										label="Disk"
-										value={server.diskPct}
-										warningAt={80}
-										criticalAt={90}
-										size="sm"
-									/>
-								</div>
-							</div>
 
-							<div
-								class="grid grid-cols-2 gap-2 border-t pt-3 font-mono text-xs tabular-nums lg:block lg:border-0 lg:pt-0"
-							>
-								<div class="flex items-center gap-1.5 text-muted-foreground">
-									<ArrowDown class="size-3.5 text-cyan-500" />
-									<span>{formatByteRate(server.networkRxBps)}</span>
-								</div>
-								<div class="mt-0 flex items-center gap-1.5 text-muted-foreground lg:mt-1">
-									<ArrowUp class="size-3.5 text-violet-500" />
-									<span>{formatByteRate(server.networkTxBps)}</span>
-								</div>
-							</div>
-
-							<div
-								class="flex items-center justify-between gap-2 text-xs text-muted-foreground lg:block"
-							>
-								<span class="lg:hidden">Last signal</span>
-								<span class="font-mono tabular-nums"
-									>{formatRelativeTimeAgo(server.lastReportedAt)}</span
+								<div
+									class="grid grid-cols-2 gap-2 border-t pt-3 font-mono text-xs tabular-nums lg:block lg:border-0 lg:pt-0"
 								>
-							</div>
-							<ArrowRight
-								class="hidden size-4 text-muted-foreground transition-transform group-hover/instance:translate-x-0.5 group-hover/instance:text-foreground lg:block"
-							/>
-						</a>
+									<div class="flex items-center gap-1.5 text-muted-foreground">
+										<ArrowDown class="size-3.5 text-cyan-500" />
+										<span>{formatByteRate(server.networkRxBps)}</span>
+									</div>
+									<div class="mt-0 flex items-center gap-1.5 text-muted-foreground lg:mt-1">
+										<ArrowUp class="size-3.5 text-violet-500" />
+										<span>{formatByteRate(server.networkTxBps)}</span>
+									</div>
+								</div>
+
+								<div
+									class="flex items-center justify-between gap-2 text-xs text-muted-foreground lg:block"
+								>
+									<span class="lg:hidden">Last signal</span>
+									<span class="font-mono tabular-nums"
+										>{formatRelativeTimeAgo(server.lastReportedAt)}</span
+									>
+								</div>
+								<ArrowRight
+									class="hidden size-4 text-muted-foreground transition-transform group-hover/instance:translate-x-0.5 group-hover/instance:text-foreground lg:block"
+								/>
+							</a>
+						{/each}
 					{/each}
-				{/each}
-			</div>
-		{/if}
-	</section>
+				</div>
+			{/if}
+		</section>
+	{/if}
 
 	<section class="space-y-3" aria-labelledby="pages-heading">
 		<div class="flex items-center justify-between">

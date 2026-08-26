@@ -16,7 +16,9 @@ Open the switcher in the top-left header. Organizations are the headings; their 
 
 The overview replaces the project sidebar with a plain header, because nothing on it is project-scoped. Pick a project from the switcher to get the sidebar back.
 
-After signing in you land on the overview automatically when your first organization has more than one project. With a single project you go straight to that project's dashboard, since an overview of one thing is not worth a click.
+After signing in you land on the overview automatically when your first organization has more than one project. With a single project you go straight to that project's dashboard, since an overview of one thing is not worth a click. That organization has no overview at all: the switcher lists it as a plain heading, and opening `/organization` for it sends you into the project.
+
+The page also adapts to what the organization contains. Instances and monitors are backend features, so when every project is a browser or mobile app the **Instances** section, the **Monitors** tab, and the four instance counters disappear, and the pulse strip keeps only issues and open on-call pages.
 
 Every organization member can open it, read-only members included. It shows the projects you can already see, so it grants no access you did not have.
 

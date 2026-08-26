@@ -1,8 +1,10 @@
 <script lang="ts">
 	import { page } from '$app/state';
 	import { authState } from '$lib/state/auth.svelte';
+	import { isBackendFramework, projectsState } from '$lib/state/projects.svelte';
 	import { setTabParam } from '$lib/utils/url-params';
 	import { gotoHref } from '$lib/utils/navigation';
+	import { LoadingCircle } from '$lib/components/ui/loading-circle';
 	import PageTabs from '$lib/components/traceway/page-tabs.svelte';
 	import InfoCallout from '$lib/components/traceway/info-callout.svelte';
 	import PageHeader from '$lib/components/traceway/page-header.svelte';
@@ -12,7 +14,7 @@
 	import MonitorsTab from './monitors-tab.svelte';
 	import ProjectsTab from './projects-tab.svelte';
 
-	const TABS = [
+	const ALL_TABS = [
 		{ value: 'overview', label: 'Overview' },
 		{ value: 'issues', label: 'Issues' },
 		{ value: 'monitors', label: 'Monitors' },
@@ -41,9 +43,27 @@
 		orgs.find((o) => o.id === currentOrganizationId)?.name ?? ''
 	);
 
+	const organizationProjects = $derived(
+		currentOrganizationId === null
+			? []
+			: projectsState.projects.filter((project) => project.organizationId === currentOrganizationId)
+	);
+
+	const singleProject = $derived(
+		organizationProjects.length === 1 ? organizationProjects[0] : null
+	);
+
+	const hasBackendProjects = $derived(
+		organizationProjects.some((project) => isBackendFramework(project.framework))
+	);
+
+	const tabs = $derived(
+		hasBackendProjects ? ALL_TABS : ALL_TABS.filter((tab) => tab.value !== 'monitors')
+	);
+
 	const activeTab = $derived.by(() => {
 		const tab = page.url.searchParams.get('tab') || 'overview';
-		return TABS.some((t) => t.value === tab) ? tab : 'overview';
+		return tabs.some((t) => t.value === tab) ? tab : 'overview';
 	});
 
 	function setTab(tab: string) {
@@ -53,6 +73,10 @@
 	$effect(() => {
 		const organizationId = currentOrganizationId;
 		if (organizationId === null) return;
+		if (singleProject) {
+			gotoHref(`/?projectId=${singleProject.id}`, { replaceState: true });
+			return;
+		}
 		if (
 			page.url.searchParams.get('organizationId') === String(organizationId) &&
 			!page.url.searchParams.has('projectId')
@@ -70,27 +94,33 @@
 	});
 </script>
 
-<div class="space-y-4">
-	<PageHeader
-		title={currentOrganizationName || 'Organization'}
-		description="Live instance health, active response, and telemetry across every project."
-	/>
+{#if singleProject}
+	<LoadingCircle size="xlg" />
+{:else}
+	<div class="space-y-4">
+		<PageHeader
+			title={currentOrganizationName || 'Organization'}
+			description={hasBackendProjects
+				? 'Live instance health, active response, and telemetry across every project.'
+				: 'Issues and active response across every project.'}
+		/>
 
-	<PageTabs tabs={TABS} {activeTab} onTabChange={setTab} />
+		<PageTabs {tabs} {activeTab} onTabChange={setTab} />
 
-	{#if TAB_DESCRIPTIONS[activeTab]}
-		<InfoCallout>{TAB_DESCRIPTIONS[activeTab]}</InfoCallout>
-	{/if}
+		{#if TAB_DESCRIPTIONS[activeTab]}
+			<InfoCallout>{TAB_DESCRIPTIONS[activeTab]}</InfoCallout>
+		{/if}
 
-	{#if currentOrganizationId === null}
-		<EmptyState message="You are not a member of any organization yet." />
-	{:else if activeTab === 'overview'}
-		<OverviewTab organizationId={currentOrganizationId} />
-	{:else if activeTab === 'issues'}
-		<IssuesTab organizationId={currentOrganizationId} />
-	{:else if activeTab === 'monitors'}
-		<MonitorsTab organizationId={currentOrganizationId} />
-	{:else if activeTab === 'projects'}
-		<ProjectsTab organizationId={currentOrganizationId} />
-	{/if}
-</div>
+		{#if currentOrganizationId === null}
+			<EmptyState message="You are not a member of any organization yet." />
+		{:else if activeTab === 'overview'}
+			<OverviewTab organizationId={currentOrganizationId} {hasBackendProjects} />
+		{:else if activeTab === 'issues'}
+			<IssuesTab organizationId={currentOrganizationId} />
+		{:else if activeTab === 'monitors'}
+			<MonitorsTab organizationId={currentOrganizationId} />
+		{:else if activeTab === 'projects'}
+			<ProjectsTab organizationId={currentOrganizationId} />
+		{/if}
+	</div>
+{/if}

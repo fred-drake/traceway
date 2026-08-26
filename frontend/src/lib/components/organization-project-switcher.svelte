@@ -99,19 +99,26 @@
 				<DropdownMenu.Separator />
 			{/if}
 			<DropdownMenu.Group>
-				<DropdownMenu.Item
-					onclick={() => selectOrganization(group.organization.id)}
-					class="cursor-pointer py-2"
-				>
-					<Building2 class="size-5 shrink-0" />
-					<div class="min-w-0 flex-1">
-						<div class="truncate font-semibold">{group.organization.name}</div>
-						<div class="text-xs text-muted-foreground">Organization overview</div>
-					</div>
-					{#if organizationContext && selectedOrganizationId === group.organization.id}
-						<Check class="size-4 shrink-0" />
-					{/if}
-				</DropdownMenu.Item>
+				{#if group.projects.length > 1}
+					<DropdownMenu.Item
+						onclick={() => selectOrganization(group.organization.id)}
+						class="cursor-pointer py-2"
+					>
+						<Building2 class="size-5 shrink-0" />
+						<div class="min-w-0 flex-1">
+							<div class="truncate font-semibold">{group.organization.name}</div>
+							<div class="text-xs text-muted-foreground">Organization overview</div>
+						</div>
+						{#if organizationContext && selectedOrganizationId === group.organization.id}
+							<Check class="size-4 shrink-0" />
+						{/if}
+					</DropdownMenu.Item>
+				{:else}
+					<DropdownMenu.Label class="flex items-center gap-2 py-2">
+						<Building2 class="size-5 shrink-0 text-muted-foreground" />
+						<span class="truncate">{group.organization.name}</span>
+					</DropdownMenu.Label>
+				{/if}
 
 				{#each group.projects as project (project.id)}
 					{@render projectItem(project)}

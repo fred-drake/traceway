@@ -15,10 +15,13 @@
 
         # Toolchain versions are derived from the manifests rather than
         # restated here, so bumping backend/go.mod or frontend/package.json
-        # moves the dev shell with it and the two cannot drift apart.
-        goVersion = builtins.match ".*\ngo ([0-9]+)\\.([0-9]+)\\.[0-9]+.*" (
-          builtins.readFile ./backend/go.mod
-        );
+        # moves the dev shell with it and the two cannot drift apart. The
+        # `toolchain` directive is what builds the backend, so it wins over the
+        # `go` floor when present.
+        goMod = builtins.readFile ./backend/go.mod;
+        goToolchain = builtins.match ".*\ntoolchain go([0-9]+)\\.([0-9]+)(\\.[0-9]+)?.*" goMod;
+        goFloor = builtins.match ".*\ngo ([0-9]+)\\.([0-9]+)(\\.[0-9]+)?.*" goMod;
+        goVersion = if goToolchain != null then goToolchain else goFloor;
         go = pkgs."go_${builtins.elemAt goVersion 0}_${builtins.elemAt goVersion 1}";
 
         frontendPackage = builtins.fromJSON (builtins.readFile ./frontend/package.json);
@@ -53,10 +56,12 @@
         # would capture it. Versions are interpolated at eval time rather than
         # probed, so entering a shell does not fork go/node.
         #
-        # Nothing here exports backend configuration: the backend supplies its
-        # own defaults, so a dev shell that set them would only shadow
-        # backend/.env (godotenv.Load never overwrites an already-set variable)
-        # and would drift from the code it duplicates.
+        # Nothing here exports backend configuration: the backend defaults
+        # everything except JWT_SECRET, so a dev shell that set the rest would
+        # only shadow backend/.env (godotenv.Load never overwrites an
+        # already-set variable) and would drift from the code it duplicates.
+        # JWT_SECRET belongs in the gitignored .envrc.local, which .envrc
+        # sources; the banner says so.
         mkShell =
           {
             name,
@@ -75,12 +80,14 @@
 
         goBanner = ''echo "  go     ${go.version}"'';
         nodeBanner = ''echo "  node   ${nodejs.version}"'';
+        secretBanner = ''echo "  env    export JWT_SECRET (32+ chars, e.g. openssl rand -hex 32) in .envrc.local"'';
 
         goShell = mkShell {
           name = "backend";
           packages = goTools ++ sharedTools;
           banner = ''
             ${goBanner}
+            ${secretBanner}
             echo "  run    cd backend && go run ./cmd/traceway"
             echo "  duckdb go build -tags telemetry_duckdb ./cmd/traceway"
           '';
@@ -94,6 +101,7 @@
             banner = ''
               ${goBanner}
               ${nodeBanner}
+              ${secretBanner}
               echo "  commands: see the Quick Start table in CLAUDE.md"
             '';
           };

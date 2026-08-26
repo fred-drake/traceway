@@ -151,6 +151,7 @@ class ProjectsState {
 	currentProjectId = $state<string | null>(localStorage.getItem('CURRENT_PROJECT_ID'));
 	loading = $state(false);
 	error = $state<string | null>(null);
+	loaded = $state(false);
 
 	currentProject = $derived(
 		this.projects.find((p) => p.id === this.currentProjectId) || this.projects[0] || null
@@ -178,6 +179,7 @@ class ProjectsState {
 
 	setProjects(projects: Project[]) {
 		this.projects = projects;
+		this.loaded = true;
 
 		// If no current project selected or current project not in list, select first one
 		if (!this.currentProjectId || !this.projects.find((p) => p.id === this.currentProjectId)) {
@@ -206,6 +208,7 @@ class ProjectsState {
 			}
 		} finally {
 			this.loading = false;
+			this.loaded = true;
 		}
 	}
 
@@ -284,6 +287,7 @@ class ProjectsState {
 	clear() {
 		this.projects = [];
 		this.currentProjectId = null;
+		this.loaded = false;
 		localStorage.removeItem(PROJECTS_CACHE_KEY);
 	}
 

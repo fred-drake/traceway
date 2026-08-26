@@ -86,10 +86,10 @@ func Run(opts ...Option) {
 	if err := services.InitJWT(); err != nil {
 		// A missing signing key is a configuration mistake, not a crash: print
 		// something actionable instead of burying the message under a panic
-		// stack trace. There is deliberately no default -- a key committed to
-		// the repo would be identical in every clone.
-		config.Logln("FATAL: " + err.Error())
-		config.Logln("Generate one with: openssl rand -hex 32")
+		// stack trace. The standalone binary deliberately has no default -- a
+		// key committed to the repo would be identical in every clone.
+		fmt.Fprintln(os.Stderr, "FATAL: "+err.Error())
+		fmt.Fprintln(os.Stderr, "Generate one with: openssl rand -hex 32")
 		os.Exit(1)
 	}
 
@@ -293,12 +293,7 @@ func Run(opts ...Option) {
 	// unconfigured). That made the same failure either fatal or invisible
 	// depending on the order of PORTS.
 	var listeners []net.Listener
-	for _, port := range strings.Split(ports, ",") {
-		port = strings.TrimSpace(port)
-		if port == "" {
-			continue
-		}
-
+	for _, port := range parsePorts(ports) {
 		addr := ":" + port
 		listener, err := net.Listen("tcp", addr)
 		if err != nil {
@@ -315,8 +310,6 @@ func Run(opts ...Option) {
 
 	for _, listener := range listeners[1:] {
 		go func(listener net.Listener) {
-			defer traceway.Recover()
-
 			config.Logln("Starting server on " + listener.Addr().String())
 			serveHTTP(router, listener)
 		}(listener)
@@ -325,6 +318,16 @@ func Run(opts ...Option) {
 	notifySystemd()
 	config.Logln("Starting server on " + listeners[0].Addr().String())
 	serveHTTP(router, listeners[0])
+}
+
+func parsePorts(ports string) []string {
+	var out []string
+	for _, port := range strings.Split(ports, ",") {
+		if port = strings.TrimSpace(port); port != "" {
+			out = append(out, port)
+		}
+	}
+	return out
 }
 
 func warnOnUntrustedForwardedFor(proxies []string) gin.HandlerFunc {

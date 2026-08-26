@@ -13,6 +13,7 @@ on:
       - "cli/**"
       - ".github/workflows/backend-vulncheck.yml"
   pull_request:
+    types: [labeled]
     paths:
       - "backend/**"
       - "cli/**"
@@ -44,6 +45,7 @@ jobs:
   # both are follow-ups.
   vulncheck:
     name: vulncheck (${{ matrix.name }})
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     strategy:
@@ -67,12 +69,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # setup-go@v5 reads only the `go` line and never sets GOTOOLCHAIN, so it
-      # installs the 1.26.2 floor and the go command then switches to the
-      # `toolchain` directive -- the same path release-traceway.yml builds the
-      # runner through. The Docker images are not covered by that: the official
-      # golang bases set GOTOOLCHAIN=local, so they build with whatever the
-      # floating golang:1.26-* tag ships, which is >= what is scanned here.
+      # setup-go@v5 honors the `toolchain` directive in go.mod, so this installs
+      # go1.26.6 -- the same version release-traceway.yml builds the runner
+      # with. The Docker images are not covered by that: the official golang
+      # bases set GOTOOLCHAIN=local, so they build with whatever the floating
+      # golang:1.26-* tag ships, which is >= what is scanned here. One setup-go
+      # cache shared by the three rows is fine here, unlike backend.yml: with
+      # no -race and no test builds the module cache is what matters, and it
+      # is identical across rows.
       - name: Setup Go
         uses: actions/setup-go@v5
         with:

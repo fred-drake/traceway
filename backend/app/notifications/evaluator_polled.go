@@ -42,8 +42,8 @@ var polledEvaluators = map[string]RuleEvaluator{
 
 type errorRateConfig struct {
 	ThresholdPercent float64 `json:"thresholdPercent"`
-	LookbackMinutes int     `json:"lookbackMinutes"`
-	MinRequests     int     `json:"minRequests"`
+	LookbackMinutes  int     `json:"lookbackMinutes"`
+	MinRequests      int     `json:"minRequests"`
 }
 
 func evaluateErrorRateThreshold(ctx context.Context, rule *models.NotificationRule, projectId uuid.UUID) (*EvalResult, error) {

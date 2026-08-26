@@ -1,5 +1,6 @@
 <script lang="ts">
 	import ToolbarSelect from '$lib/components/traceway/toolbar-select.svelte';
+	import { ROOT_FILTER_OPTIONS } from './options';
 
 	type Props = {
 		value?: string;
@@ -7,12 +8,11 @@
 	};
 
 	let { value = $bindable('all'), class: className = 'w-[120px]' }: Props = $props();
-
-	const options = [
-		{ value: 'all', label: 'All' },
-		{ value: 'root', label: 'Root' },
-		{ value: 'non_root', label: 'Non-root' }
-	];
 </script>
 
-<ToolbarSelect bind:value {options} class={className} />
+<ToolbarSelect
+	bind:value
+	options={ROOT_FILTER_OPTIONS}
+	class={className}
+	ariaLabel="Filter by root or non-root"
+/>

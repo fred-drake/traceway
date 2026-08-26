@@ -3,10 +3,10 @@
 package chdb
 
 import (
-	"github.com/tracewayapp/traceway/backend/app/config"
 	"context"
 	"crypto/tls"
 	"fmt"
+	"github.com/tracewayapp/traceway/backend/app/config"
 	"strings"
 	"time"
 

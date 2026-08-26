@@ -72,6 +72,7 @@ jobs:
   build:
     # Pinned so the binary's glibc matches the ubuntu-24.04 Hetzner image.
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -104,15 +105,18 @@ jobs:
 
   setup:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
       expected: ${{ steps.plan.outputs.expected }}
     steps:
       - id: plan
         name: Build matrix from inputs
+        env:
+          DATABASES: ${{ github.event.inputs.databases }}
         run: |
           set -euo pipefail
-          jq -nc --arg dbs "${{ github.event.inputs.databases }}" '
+          jq -nc --arg dbs "$DATABASES" '
             ($dbs | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != ""))) as $D
             | ($D - ["victoriametrics", "clickhouse", "clickhouse-map", "duckdb", "firebolt"]) as $bad
             | if ($bad | length) > 0 then error("unknown databases: " + ($bad | join(","))) else . end
@@ -161,10 +165,12 @@ jobs:
             | sudo tar -xz -C /usr/local/bin hcloud
 
       - name: Materialize SSH key
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.BENCHMARK_SSH_PRIVATE_KEY }}
         run: |
           umask 077
           key="$RUNNER_TEMP/benchmark-key"
-          printf '%s\n' "${{ secrets.BENCHMARK_SSH_PRIVATE_KEY }}" > "$key"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$key"
           echo "BENCHMARK_SSH_KEY=$key" >> "$GITHUB_ENV"
 
       - name: Preflight
@@ -195,6 +201,7 @@ jobs:
     needs: [setup, run]
     if: always()
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 

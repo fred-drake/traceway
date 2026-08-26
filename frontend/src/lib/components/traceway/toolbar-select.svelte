@@ -6,18 +6,19 @@
 
 	interface Props {
 		value?: string;
-		options: Option[];
+		options: readonly Option[];
 		class?: string;
+		ariaLabel?: string;
 		onChange?: (value: string) => void;
 	}
 
-	let { value = $bindable(''), options, class: className, onChange }: Props = $props();
+	let { value = $bindable(''), options, class: className, ariaLabel, onChange }: Props = $props();
 
 	const label = $derived(options.find((o) => o.value === value)?.label ?? options[0]?.label ?? '');
 </script>
 
 <Select.Root type="single" bind:value onValueChange={(v) => onChange?.(v ?? '')}>
-	<Select.Trigger class={cn('h-9 w-[140px]', className)}>
+	<Select.Trigger class={cn('h-9 w-[140px]', className)} aria-label={ariaLabel}>
 		{label}
 	</Select.Trigger>
 	<Select.Content>

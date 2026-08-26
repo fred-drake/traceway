@@ -542,8 +542,14 @@
 					</div>
 				</a>
 			{:else}
-				<div class="px-5 py-4">
-					<div class="text-xs text-muted-foreground">Active response</div>
+				<a
+					href="#pages-heading"
+					class="group px-5 py-4 transition-colors hover:bg-muted/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+				>
+					<div class="flex items-center justify-between text-xs text-muted-foreground">
+						Active response
+						<ArrowRight class="size-3.5 opacity-0 transition-opacity group-hover:opacity-100" />
+					</div>
 					<div
 						class="mt-1 font-mono text-xl font-semibold tabular-nums {openPagesCount > 0
 							? 'text-rose-600 dark:text-rose-400'
@@ -551,7 +557,7 @@
 					>
 						{pagesLoading || pagesError ? '—' : openPagesCount}
 					</div>
-				</div>
+				</a>
 			{/if}
 		</div>
 	</section>

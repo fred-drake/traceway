@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/tracewayapp/traceway/backend/app/middleware"
@@ -47,7 +48,25 @@ type EndpointStackedChartRequest struct {
 	ToDate          time.Time `json:"toDate"`
 	MetricType      string    `json:"metricType"`      // total_time, p50, p95, p99
 	IntervalMinutes int       `json:"intervalMinutes"` // bucket size
+	Search          string    `json:"search"`
+	RootFilter      string    `json:"rootFilter"`
+	MethodFilter    string    `json:"methodFilter"`
 }
+
+var validEndpointMethods = map[string]bool{
+	"GET": true, "HEAD": true, "POST": true, "PUT": true, "DELETE": true,
+	"CONNECT": true, "OPTIONS": true, "TRACE": true, "PATCH": true,
+}
+
+func normalizeMethodFilter(method string) (string, bool) {
+	if method == "" {
+		return "", true
+	}
+	method = strings.ToUpper(method)
+	return method, validEndpointMethods[method]
+}
+
+const invalidMethodFilterMessage = "methodFilter must be an HTTP method such as GET or POST"
 
 func (e endpointController) FindAllEndpoints(c *gin.Context) {
 	projectId, err := middleware.GetProjectId(c)
@@ -94,8 +113,14 @@ func (e endpointController) FindGroupedByEndpoint(c *gin.Context) {
 		return
 	}
 
+	methodFilter, ok := normalizeMethodFilter(request.MethodFilter)
+	if !ok {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": invalidMethodFilterMessage})
+		return
+	}
+
 	span := traceway.StartSpan(c, "loading grouped endpoints")
-	stats, total, err := telemetry.EndpointRepository.FindGroupedByEndpoint(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection, request.Search, request.RootFilter, request.MethodFilter)
+	stats, total, err := telemetry.EndpointRepository.FindGroupedByEndpoint(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection, request.Search, request.RootFilter, methodFilter)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading stats: %w", err))
@@ -190,8 +215,14 @@ func (e endpointController) GetStackedChart(c *gin.Context) {
 		request.MetricType = "total_time" // default
 	}
 
+	methodFilter, ok := normalizeMethodFilter(request.MethodFilter)
+	if !ok {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": invalidMethodFilterMessage})
+		return
+	}
+
 	span := traceway.StartSpan(c, "loading stacked chart")
-	data, err := telemetry.EndpointRepository.GetEndpointStackedChart(c, projectId, request.FromDate, request.ToDate, request.IntervalMinutes, request.MetricType)
+	data, err := telemetry.EndpointRepository.GetEndpointStackedChart(c, projectId, request.FromDate, request.ToDate, request.IntervalMinutes, request.MetricType, request.Search, request.RootFilter, methodFilter)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading stacked chart data: %w", err))

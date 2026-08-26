@@ -52,7 +52,8 @@ Maintainers add labels after the issue is filed. You don't need to set them your
 ## Prerequisites
 
 - **Go** 1.26 or later
-- **Node.js** 18+ and npm
+- **Node.js** 22 and npm (`frontend/package.json` pins `engines.node` and `frontend/.npmrc` enforces it)
+- **Nix** (optional): `nix develop` at the repository root opens a shell with the pinned Go and Node plus `just`, `golangci-lint` and `govulncheck`. `.envrc` wires it into direnv, and `.envrc.local` (gitignored) is the place for `JWT_SECRET`.
 - **Docker** (for running the full ClickHouse + PostgreSQL test suite)
 - **ClickHouse** and **PostgreSQL** (only if running the standalone server locally; not needed for embedded/SQLite mode)
 
@@ -292,6 +293,8 @@ Then create a pull request on GitHub. Include:
 - A short description of what the change does and why
 - Steps to test, if applicable
 - Screenshots for UI changes
+
+The backend and CLI workflows do not start on their own when a PR is opened. A maintainer applies the `ci` label to run them against the PR as it stands, and re-applies it after new pushes. That is why the local checks above matter: they are the only feedback until the label goes on.
 
 ### Keeping your fork up to date
 

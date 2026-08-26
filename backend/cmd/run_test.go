@@ -4,6 +4,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -95,5 +96,21 @@ func TestUntrustedForwarderDetectorFiresOnceForPeersOutsideTheList(t *testing.T)
 	}
 	if _, first := check("172.17.0.1", "198.51.100.20"); first {
 		t.Fatal("fired a second time")
+	}
+}
+
+func TestParsePorts(t *testing.T) {
+	cases := map[string][]string{
+		"80,8082":  {"80", "8082"},
+		" 8082 , ": {"8082"},
+		",8082":    {"8082"},
+		"8082":     {"8082"},
+		",":        nil,
+		"":         nil,
+	}
+	for in, want := range cases {
+		if got := parsePorts(in); !slices.Equal(got, want) {
+			t.Errorf("parsePorts(%q) = %v, want %v", in, got, want)
+		}
 	}
 }

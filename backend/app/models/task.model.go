@@ -7,13 +7,13 @@ import (
 )
 
 type Task struct {
-	Id         uuid.UUID         `json:"id" ch:"id"`
-	ProjectId  uuid.UUID         `json:"projectId" ch:"project_id"`
-	TaskName   string            `json:"taskName" ch:"task_name"`
-	Duration   time.Duration     `json:"duration" ch:"duration"`
-	RecordedAt time.Time         `json:"recordedAt" ch:"recorded_at"`
-	ClientIP   string            `json:"clientIP" ch:"client_ip"`
-	Attributes map[string]string `json:"attributes" ch:"attributes"`
+	Id                 uuid.UUID         `json:"id" ch:"id"`
+	ProjectId          uuid.UUID         `json:"projectId" ch:"project_id"`
+	TaskName           string            `json:"taskName" ch:"task_name"`
+	Duration           time.Duration     `json:"duration" ch:"duration"`
+	RecordedAt         time.Time         `json:"recordedAt" ch:"recorded_at"`
+	ClientIP           string            `json:"clientIP" ch:"client_ip"`
+	Attributes         map[string]string `json:"attributes" ch:"attributes"`
 	AppVersion         string            `json:"appVersion" ch:"app_version"`
 	ServerName         string            `json:"serverName" ch:"server_name"`
 	DistributedTraceId *uuid.UUID        `json:"distributedTraceId,omitempty" ch:"distributed_trace_id"`

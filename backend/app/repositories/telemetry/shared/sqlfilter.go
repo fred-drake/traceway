@@ -1,6 +1,10 @@
 package shared
 
-import "sort"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // RootFilterClause returns the WHERE fragment for the issues/endpoints
 // root-vs-non-root filter; both embedded backends store is_root as 0/1.
@@ -14,11 +18,17 @@ func RootFilterClause(qualifiedCol, rootFilter string) string {
 		return ""
 	}
 }
-func MethodFilterClause(qualifiedCol, methodFilter string) string {
-	if methodFilter != "" {
-		return " AND " + qualifiedCol + " LIKE :method"
+
+func MethodPrefix(method string) string {
+	return strings.ToUpper(method) + " "
+}
+
+func MethodFilterClause(qualifiedCol, method string) (clause string, param string) {
+	if method == "" {
+		return "", ""
 	}
-	return ""
+	prefix := MethodPrefix(method)
+	return fmt.Sprintf(" AND SUBSTR(%s, 1, %d) = :method", qualifiedCol, len(prefix)), prefix
 }
 
 // SortedKeys returns map keys in stable order so generated SQL and its

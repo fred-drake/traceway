@@ -6,8 +6,8 @@ import (
 	"time"
 
 	"github.com/google/pprof/profile"
-	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	colprofilespb "go.opentelemetry.io/proto/otlp/collector/profiles/v1development"
+	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	profilespb "go.opentelemetry.io/proto/otlp/profiles/v1development"
 	resourcepb "go.opentelemetry.io/proto/otlp/resource/v1"
 	"google.golang.org/protobuf/proto"

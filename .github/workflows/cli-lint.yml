@@ -17,6 +17,7 @@ on:
       - "cli/**"
       - ".github/workflows/cli-lint.yml"
   pull_request:
+    types: [labeled]
     paths:
       - "cli/**"
       - ".github/workflows/cli-lint.yml"
@@ -30,14 +31,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 # Two jobs, not one: a lint nit and a stdlib CVE are different signals, and
 # neither should mask the other.
 jobs:
   lint:
     # The daily run exists for the vulnerability database. Lint is pinned and
     # deterministic, so re-running it on a timer would only add noise.
-    if: github.event_name != 'schedule'
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || github.event.label.name == 'ci')
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -49,9 +55,9 @@ jobs:
           cache-dependency-path: cli/go.sum
 
       # Pinned, not `latest`: a new linter release must never turn an unrelated
-      # PR red. CI is authoritative for the version -- cli/flake.nix takes
-      # whatever golangci-lint its nixpkgs input carries and cannot pin one, so
-      # a local `just lint` can legitimately differ after a flake update.
+      # PR red. CI is authoritative for the version -- the flake.nix dev shell
+      # takes whatever golangci-lint its nixpkgs input carries and cannot pin
+      # one, so a local `just lint` can legitimately differ after a flake update.
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -59,7 +65,9 @@ jobs:
           working-directory: cli
 
   vulncheck:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     defaults:
       run:
         working-directory: cli

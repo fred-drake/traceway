@@ -219,19 +219,25 @@ func (e *endpointRepository) FindAll(ctx context.Context, projectId uuid.UUID, f
 	return endpoints, count, nil
 }
 
+func endpointFilterClause(params lit.P, col, search, rootFilter, methodFilter string) string {
+	clause := ""
+	if search != "" {
+		clause += " AND INSTR(LOWER(" + col + "endpoint), LOWER(:search)) > 0"
+		params["search"] = search
+	}
+	clause += shared.RootFilterClause(col+"is_root", rootFilter)
+	if methodClause, method := shared.MethodFilterClause(col+"endpoint", methodFilter); methodClause != "" {
+		clause += methodClause
+		params["method"] = method
+	}
+	return clause
+}
+
 func (e *endpointRepository) FindGroupedByEndpoint(ctx context.Context, projectId uuid.UUID, fromDate, toDate time.Time, page, pageSize int, orderBy string, sortDirection string, search string, rootFilter string, methodFilter string) ([]models.EndpointStats, int64, error) {
 	params := lit.P{"project_id": projectId, "from": fromDate.UTC(), "to": toDate.UTC()}
 
 	whereClause := "e.project_id = :project_id AND e.recorded_at >= :from AND e.recorded_at <= :to"
-	if search != "" {
-		whereClause += " AND INSTR(LOWER(e.endpoint), LOWER(:search)) > 0"
-		params["search"] = search
-	}
-	if methodFilter != "" {
-		params["method"] = strings.ToUpper(methodFilter) + " %"
-	}
-	whereClause += shared.RootFilterClause("e.is_root", rootFilter)
-	whereClause += shared.MethodFilterClause("e.endpoint", methodFilter)
+	whereClause += endpointFilterClause(params, "e.", search, rootFilter, methodFilter)
 
 	groupQuery := `SELECT
 		e.endpoint,
@@ -627,10 +633,11 @@ func (e *endpointRepository) GetEndpointStats(ctx context.Context, projectId uui
 	return &stats, nil
 }
 
-func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projectId uuid.UUID, start, end time.Time, intervalMinutes int, metricType string) (*models.EndpointStackedChartResponse, error) {
+func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projectId uuid.UUID, start, end time.Time, intervalMinutes int, metricType string, search, rootFilter, methodFilter string) (*models.EndpointStackedChartResponse, error) {
 	params := lit.P{"project_id": projectId, "from": start.UTC(), "to": end.UTC()}
+	filterClause := endpointFilterClause(params, "", search, rootFilter, methodFilter)
 
-	topEndpoints, err := getTopEndpointsByMetric(ctx, projectId, start, end, metricType)
+	topEndpoints, err := getTopEndpointsByMetric(ctx, projectId, start, end, metricType, search, rootFilter, methodFilter)
 	if err != nil {
 		return nil, err
 	}
@@ -645,7 +652,7 @@ func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projec
 	secs := intervalMinutes * 60
 
 	if metricType == "p50" || metricType == "p95" || metricType == "p99" || metricType == "" {
-		return e.getStackedChartWithPercentiles(ctx, projectId, start, end, secs, topEndpoints, metricType)
+		return e.getStackedChartWithPercentiles(ctx, projectId, start, end, secs, topEndpoints, metricType, search, rootFilter, methodFilter)
 	}
 
 	caseExpr := "CASE "
@@ -669,9 +676,9 @@ func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projec
 		%s as endpoint_category,
 		%s as metric_value
 	FROM endpoints
-	WHERE project_id = :project_id AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0
+	WHERE project_id = :project_id AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0%s
 	GROUP BY bucket, endpoint_category
-	ORDER BY bucket ASC, endpoint_category ASC`, timeBucketExpr("recorded_at", secs), caseExpr, metricExpr)
+	ORDER BY bucket ASC, endpoint_category ASC`, timeBucketExpr("recorded_at", secs), caseExpr, metricExpr, filterClause)
 
 	parsedQuery, args, err := lit.ParseNamedQuery(db.Driver, timeSeriesQuery, params)
 	if err != nil {
@@ -712,7 +719,7 @@ func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projec
 	}, nil
 }
 
-func (e *endpointRepository) getStackedChartWithPercentiles(ctx context.Context, projectId uuid.UUID, start, end time.Time, bucketSecs int, topEndpoints []string, metricType string) (*models.EndpointStackedChartResponse, error) {
+func (e *endpointRepository) getStackedChartWithPercentiles(ctx context.Context, projectId uuid.UUID, start, end time.Time, bucketSecs int, topEndpoints []string, metricType string, search, rootFilter, methodFilter string) (*models.EndpointStackedChartResponse, error) {
 	percentile := 0.5
 	switch metricType {
 	case "p95":
@@ -722,6 +729,7 @@ func (e *endpointRepository) getStackedChartWithPercentiles(ctx context.Context,
 	}
 
 	params := lit.P{"project_id": projectId, "from": start.UTC(), "to": end.UTC()}
+	filterClause := endpointFilterClause(params, "", search, rootFilter, methodFilter)
 
 	caseExpr := "CASE "
 	for i, ep := range topEndpoints {
@@ -736,9 +744,9 @@ func (e *endpointRepository) getStackedChartWithPercentiles(ctx context.Context,
 		%s as endpoint_category,
 		quantile_cont(duration, %g) / 1000000.0 as metric_value
 	FROM endpoints
-	WHERE project_id = :project_id AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0
+	WHERE project_id = :project_id AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0%s
 	GROUP BY bucket, endpoint_category
-	ORDER BY bucket ASC, endpoint_category ASC`, timeBucketExpr("recorded_at", bucketSecs), caseExpr, percentile)
+	ORDER BY bucket ASC, endpoint_category ASC`, timeBucketExpr("recorded_at", bucketSecs), caseExpr, percentile, filterClause)
 
 	parsedQuery, args, err := lit.ParseNamedQuery(db.Driver, query, params)
 	if err != nil {
@@ -839,13 +847,14 @@ func sortEndpointStats(stats []models.EndpointStats, orderBy string, sortDirecti
 	})
 }
 
-func getTopEndpointsByMetric(ctx context.Context, projectId uuid.UUID, from, to time.Time, metricType string) ([]string, error) {
+func getTopEndpointsByMetric(ctx context.Context, projectId uuid.UUID, from, to time.Time, metricType string, search, rootFilter, methodFilter string) ([]string, error) {
 	params := lit.P{"project_id": projectId, "from": from.UTC(), "to": to.UTC()}
+	filterClause := endpointFilterClause(params, "", search, rootFilter, methodFilter)
 
 	if metricType == "total_time" {
 		results, err := lit.SelectNamed[endpointMetricRow](db.TelemetryDB,
 			`SELECT endpoint, COUNT(*) * AVG(duration) / 1000000.0 as metric_value
-			FROM endpoints WHERE project_id = :project_id AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0
+			FROM endpoints WHERE project_id = :project_id AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0`+filterClause+`
 			GROUP BY endpoint ORDER BY metric_value DESC LIMIT 5`,
 			params)
 		if err != nil {
@@ -869,8 +878,8 @@ func getTopEndpointsByMetric(ctx context.Context, projectId uuid.UUID, from, to 
 
 	results, err := lit.SelectNamed[endpointMetricRow](db.TelemetryDB,
 		fmt.Sprintf(`SELECT endpoint, quantile_cont(duration, %g) / 1000000.0 as metric_value
-		FROM endpoints WHERE project_id = :project_id AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0
-		GROUP BY endpoint ORDER BY metric_value DESC LIMIT 5`, percentile),
+		FROM endpoints WHERE project_id = :project_id AND recorded_at >= :from AND recorded_at <= :to AND is_stream = 0%s
+		GROUP BY endpoint ORDER BY metric_value DESC LIMIT 5`, percentile, filterClause),
 		params)
 	if err != nil {
 		return nil, err

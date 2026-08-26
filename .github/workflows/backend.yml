@@ -11,10 +11,12 @@ on:
       - "cli/**"
       - ".github/workflows/backend.yml"
   pull_request:
+    types: [labeled]
     paths:
       - "backend/**"
       - "cli/**"
       - ".github/workflows/backend.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -26,6 +28,7 @@ concurrency:
 jobs:
   sqlite:
     name: Test (dual SQLite)
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -51,8 +54,10 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: go-${{ runner.os }}-sqlite-${{ hashFiles('backend/go.sum') }}
-          restore-keys: go-${{ runner.os }}-sqlite-
+          key: go-${{ runner.os }}-sqlite-${{ hashFiles('backend/go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-${{ runner.os }}-sqlite-${{ hashFiles('backend/go.sum') }}-
+            go-${{ runner.os }}-sqlite-
 
       # CGO_ENABLED=0 mirrors Dockerfile.sqlite, so CI links what ships.
       - name: Build
@@ -74,6 +79,20 @@ jobs:
             GOOS=$1 GOARCH=$2 go build -o /dev/null ./cmd/traceway-runner
           done
 
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l reports unformatted files"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        env:
+          CGO_ENABLED: "1"
+        run: go vet ./...
+
       # The race detector requires cgo, so this step cannot inherit the
       # CGO_ENABLED=0 above. Worth the divergence: the backend runs the outbox
       # drain, on-call escalator, synthetics scheduler and recordings uploader
@@ -85,6 +104,7 @@ jobs:
 
   duckdb:
     name: Test (DuckDB telemetry)
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
@@ -110,14 +130,16 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: go-${{ runner.os }}-duckdb-${{ hashFiles('backend/go.sum') }}
-          restore-keys: go-${{ runner.os }}-duckdb-
+          key: go-${{ runner.os }}-duckdb-${{ hashFiles('backend/go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-${{ runner.os }}-duckdb-${{ hashFiles('backend/go.sum') }}-
+            go-${{ runner.os }}-duckdb-
 
       # Load-bearing, not redundant with the tests below: the test scope covers
-      # two package trees, so this is what compiles the other ~47 packages under
+      # two package trees, so this is what compiles every other package under
       # this tag.
       - name: Build
-        run: go build -tags telemetry_duckdb ./cmd/traceway ./cmd/traceway-runner
+        run: go build -tags telemetry_duckdb ./...
 
       # The DuckDB harness opens an in-memory database, so no service
       # containers are needed. app/retention is included because
@@ -130,6 +152,7 @@ jobs:
 
   pgch:
     name: Test (PostgreSQL + ClickHouse)
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     defaults:
@@ -195,8 +218,10 @@ jobs:
           path: |
             ~/.cache/go-build
             ~/go/pkg/mod
-          key: go-${{ runner.os }}-pgch-${{ hashFiles('backend/go.sum') }}
-          restore-keys: go-${{ runner.os }}-pgch-
+          key: go-${{ runner.os }}-pgch-${{ hashFiles('backend/go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-${{ runner.os }}-pgch-${{ hashFiles('backend/go.sum') }}-
+            go-${{ runner.os }}-pgch-
 
       # CGO_ENABLED=0 mirrors Dockerfile and Dockerfile.minimal.
       - name: Build

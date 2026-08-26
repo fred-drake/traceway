@@ -390,19 +390,19 @@
 				onChange={applyFilterChange}
 				class="h-9 w-[130px] shrink-0 shadow-none sm:rounded-none sm:border-r-0"
 			/>
-			<ToolbarSelect
-				bind:value={modelFilter}
-				options={modelOptions}
-				class="h-9 w-[160px] shrink-0 shadow-none sm:rounded-none sm:border-r-0"
-				onChange={applyFilterChange}
-			/>
-			<ToolbarSelect
-				bind:value={toolFilter}
-				options={toolOptions}
-				class="h-9 w-[150px] shrink-0 shadow-none sm:rounded-none sm:border-r-0"
-				onChange={applyFilterChange}
-			/>
 		{/snippet}
+		<ToolbarSelect
+			bind:value={modelFilter}
+			options={modelOptions}
+			class="w-[160px]"
+			onChange={applyFilterChange}
+		/>
+		<ToolbarSelect
+			bind:value={toolFilter}
+			options={toolOptions}
+			class="w-[150px]"
+			onChange={applyFilterChange}
+		/>
 	</SearchBar>
 
 	{#if filterPills.length > 0}

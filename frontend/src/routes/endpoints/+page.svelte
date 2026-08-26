@@ -42,7 +42,8 @@
 		handleSortClick,
 		type SortDirection
 	} from '$lib/utils/sort-storage';
-	import { EndpointFilter } from '$lib/components/ui/endpoint-filter';
+	import { EndpointFilter, isMethodFilterValue } from '$lib/components/ui/endpoint-filter';
+	import { isRootFilterValue } from '$lib/components/ui/root-filter';
 
 	const timezone = $derived(getTimezone());
 	const initialTimezone = getTimezone();
@@ -109,16 +110,27 @@
 	let total = $state(0);
 	let totalPages = $state(0);
 
-	// Parse URL params including search + rootFilter
+	// Parse URL params including search + rootFilter + methodFilter
 	function parseEndpointsUrlParams() {
-		if (!browser) return { preset: '24h', from: null, to: null, search: '', rootFilter: 'all', methodFilter: 'all' };
+		if (!browser) {
+			return {
+				preset: '24h',
+				from: null,
+				to: null,
+				search: '',
+				rootFilter: 'all',
+				methodFilter: 'all'
+			};
+		}
 		const params = new URLSearchParams(window.location.search);
 		const timeParams = parseTimeRangeFromUrl(timezone, '24h');
+		const rootParam = params.get('rootFilter');
+		const methodParam = params.get('methodFilter');
 		return {
 			...timeParams,
 			search: params.get('search') || '',
-			rootFilter: params.get('rootFilter') || 'all',
-			methodFilter: params.get('methodFilter') || 'all'
+			rootFilter: isRootFilterValue(rootParam) ? rootParam : 'all',
+			methodFilter: isMethodFilterValue(methodParam) ? methodParam : 'all'
 		};
 	}
 
@@ -237,6 +249,14 @@
 		return 240; // 4 hours
 	}
 
+	function filterRequestFields() {
+		return {
+			search: searchQuery.trim(),
+			rootFilter: rootFilter === 'all' ? '' : rootFilter,
+			methodFilter: methodFilter === 'all' ? '' : methodFilter
+		};
+	}
+
 	async function loadChartData() {
 		chartLoading = true;
 
@@ -251,7 +271,8 @@
 					fromDate: fromStr,
 					toDate: toStr,
 					metricType: selectedMetric,
-					intervalMinutes: interval
+					intervalMinutes: interval,
+					...filterRequestFields()
 				},
 				{ projectId: projectsState.currentProjectId ?? undefined }
 			)) as ChartResponse;
@@ -298,9 +319,7 @@
 					page: page,
 					pageSize: pageSize
 				},
-				search: searchQuery.trim(),
-				rootFilter: rootFilter === 'all' ? '' : rootFilter,
-				methodFilter: methodFilter === 'all' ? '' : methodFilter,
+				...filterRequestFields()
 			};
 
 			const response = await api.post('/endpoints/grouped', requestBody, {

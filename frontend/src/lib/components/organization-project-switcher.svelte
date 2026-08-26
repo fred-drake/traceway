@@ -99,7 +99,7 @@
 				<DropdownMenu.Separator />
 			{/if}
 			<DropdownMenu.Group>
-				{#if group.projects.length > 1}
+				{#if group.projects.length !== 1}
 					<DropdownMenu.Item
 						onclick={() => selectOrganization(group.organization.id)}
 						class="cursor-pointer py-2"

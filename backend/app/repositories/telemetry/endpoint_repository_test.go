@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -183,6 +184,88 @@ func TestEndpointRepository_FindGroupedByEndpoint_Search(t *testing.T) {
 	}
 	if stats[0].Endpoint != "GET /api/users" {
 		t.Errorf("expected 'GET /api/users', got %q", stats[0].Endpoint)
+	}
+}
+
+func TestEndpointRepository_FindGroupedByEndpoint_MethodFilter(t *testing.T) {
+	setupTestDB(t)
+	ctx := context.Background()
+	projectId := uuid.New()
+	now := truncateMs(time.Now().UTC())
+
+	endpoints := []models.Endpoint{
+		makeEndpoint(projectId, "GET /api/users", 100*time.Millisecond, 200, now),
+		makeEndpoint(projectId, "POST /api/users", 200*time.Millisecond, 201, now.Add(time.Minute)),
+		makeEndpoint(projectId, "GETAWAY /api/cars", 100*time.Millisecond, 200, now.Add(2*time.Minute)),
+		makeEndpoint(projectId, "get /api/lowercase", 100*time.Millisecond, 200, now.Add(3*time.Minute)),
+	}
+
+	if err := EndpointRepository.InsertAsync(ctx, endpoints); err != nil {
+		t.Fatalf("InsertAsync failed: %v", err)
+	}
+
+	stats, total, err := EndpointRepository.FindGroupedByEndpoint(ctx, projectId, now.Add(-time.Hour), now.Add(time.Hour), 1, 10, "count", "desc", "", "", "get")
+	if err != nil {
+		t.Fatalf("FindGroupedByEndpoint with method filter failed: %v", err)
+	}
+
+	if total != 1 {
+		t.Errorf("expected 1 matching endpoint, got %d", total)
+	}
+	if len(stats) != 1 {
+		t.Fatalf("expected 1 grouped stat, got %d", len(stats))
+	}
+	if stats[0].Endpoint != "GET /api/users" {
+		t.Errorf("expected 'GET /api/users', got %q", stats[0].Endpoint)
+	}
+}
+
+func TestEndpointRepository_GetEndpointStackedChart_Filters(t *testing.T) {
+	setupTestDB(t)
+	ctx := context.Background()
+	projectId := uuid.New()
+	now := truncateMs(time.Now().UTC())
+
+	var endpoints []models.Endpoint
+	for i := range 6 {
+		name := fmt.Sprintf("GET /api/g%d", i)
+		endpoints = append(endpoints, makeEndpoint(projectId, name, time.Duration(i+1)*100*time.Millisecond, 200, now))
+	}
+	endpoints = append(endpoints, makeEndpoint(projectId, "POST /api/p", time.Second, 201, now))
+
+	if err := EndpointRepository.InsertAsync(ctx, endpoints); err != nil {
+		t.Fatalf("InsertAsync failed: %v", err)
+	}
+
+	for _, metricType := range []string{"total_time", "p95"} {
+		chart, err := EndpointRepository.GetEndpointStackedChart(ctx, projectId, now.Add(-time.Hour), now.Add(time.Hour), 5, metricType, "", "", "get")
+		if err != nil {
+			t.Fatalf("%s: GetEndpointStackedChart failed: %v", metricType, err)
+		}
+		if len(chart.Endpoints) != 6 || chart.Endpoints[5] != "Other" {
+			t.Errorf("%s: expected five GET endpoints plus Other, got %v", metricType, chart.Endpoints)
+		}
+		for _, name := range chart.Endpoints {
+			if name == "POST /api/p" {
+				t.Errorf("%s: POST endpoint leaked into the filtered chart", metricType)
+			}
+		}
+		if len(chart.Series) == 0 {
+			t.Errorf("%s: expected series points", metricType)
+		}
+		for _, p := range chart.Series {
+			if p.Endpoint == "POST /api/p" {
+				t.Errorf("%s: POST endpoint leaked into the series", metricType)
+			}
+		}
+	}
+
+	chart, err := EndpointRepository.GetEndpointStackedChart(ctx, projectId, now.Add(-time.Hour), now.Add(time.Hour), 5, "total_time", "api/p", "", "")
+	if err != nil {
+		t.Fatalf("GetEndpointStackedChart with search failed: %v", err)
+	}
+	if len(chart.Endpoints) != 1 || chart.Endpoints[0] != "POST /api/p" {
+		t.Errorf("expected the search to leave only POST /api/p, got %v", chart.Endpoints)
 	}
 }
 

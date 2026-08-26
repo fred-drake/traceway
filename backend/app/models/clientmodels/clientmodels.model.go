@@ -1,8 +1,8 @@
 package clientmodels
 
 import (
-	"github.com/tracewayapp/traceway/backend/app/models"
 	"encoding/json"
+	"github.com/tracewayapp/traceway/backend/app/models"
 	"time"
 
 	"github.com/google/uuid"
@@ -170,12 +170,12 @@ func (c *ClientSpan) ParsedId() uuid.UUID {
 
 func (c *ClientSpan) ToSpan(traceId uuid.UUID) models.Span {
 	return models.Span{
-		Id:      c.ParsedId(),
-		TraceId: traceId,
-		Name:          c.Name,
-		StartTime:     c.StartTime,
-		Duration:      c.Duration,
-		RecordedAt:    time.Now(),
+		Id:         c.ParsedId(),
+		TraceId:    traceId,
+		Name:       c.Name,
+		StartTime:  c.StartTime,
+		Duration:   c.Duration,
+		RecordedAt: time.Now(),
 	}
 }
 

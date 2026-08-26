@@ -26,7 +26,7 @@
 		 * Optional slot rendered inside the joined search unit, between the type
 		 * select (if any) and the Go button. Use for a control that should share
 		 * the pill's borders instead of standing on its own - style it with
-		 * `rounded-none border-r-0` to match.
+		 * `sm:rounded-none sm:border-r-0` to match.
 		 */
 		pillEnd?: Snippet;
 	};
@@ -61,7 +61,7 @@
 		{#if typeOptions.length > 0}
 			<Select.Root type="single" bind:value={typeValue}>
 				<Select.Trigger
-					class="h-9 w-fit shrink-0 shadow-none sm:rounded-none sm:border-r-0"
+					class="h-9 min-w-[110px] shrink-0 shadow-none sm:rounded-none sm:border-r-0"
 				>
 					{typeLabel}
 				</Select.Trigger>

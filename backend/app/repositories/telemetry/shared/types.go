@@ -27,18 +27,18 @@ type FiredNotification struct {
 // scheduled time (the uptime timeline position); ExecutedAt is when the probe
 // actually ran.
 type CheckResult struct {
-	ProjectId        uuid.UUID
-	CheckId          int
-	RunId            int
-	CheckType        string
-	RecordedAt       time.Time
-	ExecutedAt       time.Time
-	Status           string
-	LatencyMs        float64
-	StatusCode       int
-	ErrorMsg         string
-	ExecutedBy       string
-	ScreenshotKey    string
+	ProjectId     uuid.UUID
+	CheckId       int
+	RunId         int
+	CheckType     string
+	RecordedAt    time.Time
+	ExecutedAt    time.Time
+	Status        string
+	LatencyMs     float64
+	StatusCode    int
+	ErrorMsg      string
+	ExecutedBy    string
+	ScreenshotKey string
 	// OutputKey references the stored Playwright output (stdout/stderr tail
 	// + report error) of a failed browser run, next to the screenshot.
 	OutputKey        string

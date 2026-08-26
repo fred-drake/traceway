@@ -10,11 +10,11 @@ import (
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
+	_ "github.com/lib/pq"
 	"github.com/tracewayapp/lit/v2"
 	"github.com/tracewayapp/traceway/backend/app/chdb"
 	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	_ "github.com/lib/pq"
 )
 
 func setupTestDB(t *testing.T) {

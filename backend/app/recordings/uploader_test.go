@@ -127,4 +127,3 @@ func TestEnqueue_NoSingleton_NoOps(t *testing.T) {
 
 	Enqueue(makeJob())
 }
-

@@ -12,6 +12,7 @@ on:
       - "backend/**"
       - ".github/workflows/cli-contract.yml"
   pull_request:
+    types: [labeled]
     paths:
       - "cli/**"
       - "backend/**"
@@ -23,6 +24,7 @@ permissions:
 
 jobs:
   contract:
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
     runs-on: ubuntu-latest
     defaults:
       run:

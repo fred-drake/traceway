@@ -331,6 +331,16 @@ historical folders (`benchmarks/results/2026-05-15/` etc.) from before
 this layout change are kept in git for reference but are no longer written
 to.
 
+### Metrics store benchmark
+
+`.github/workflows/benchmark-metricsdb.yml`, `workflow_dispatch` only. It
+provisions one dedicated-core Hetzner box per database (VictoriaMetrics,
+ClickHouse, DuckDB, Firebolt) and tears it down afterwards; a full run of the
+default four on ccx33 is about EUR 2.50. It uses the same two secrets as the
+hardware benchmark. The `benchmarks/metricsdb` tree it builds and runs is not
+on `main` yet (`.gitignore` excludes it while it lives on a branch), so a
+dispatch fails at the build job until that tree lands.
+
 ## Running against managed ClickHouse
 
 Setting `modes=managed-ch` in the workflow dispatch (or `--mode managed-ch`

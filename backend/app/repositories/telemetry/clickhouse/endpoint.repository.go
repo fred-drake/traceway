@@ -7,7 +7,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"strings"
 	"time"
 
 	"github.com/tracewayapp/traceway/backend/app/chdb"
@@ -99,33 +98,33 @@ func (e *endpointRepository) FindAll(ctx context.Context, projectId uuid.UUID, f
 	return endpoints, int64(count), nil
 }
 
-func (e *endpointRepository) FindGroupedByEndpoint(ctx context.Context, projectId uuid.UUID, fromDate, toDate time.Time, page, pageSize int, orderBy string, sortDirection string, search string, rootFilter string, methodFilter string) ([]models.EndpointStats, int64, error) {
-	// Build WHERE clause with optional search filter
-	// Count query uses bare column names; main query uses e. prefix for LEFT JOIN
-	whereClause := "project_id = ? AND recorded_at >= ? AND recorded_at <= ?"
-	joinWhereClause := "e.project_id = ? AND e.recorded_at >= ? AND e.recorded_at <= ?"
-	args := []interface{}{projectId, fromDate, toDate}
-
+func endpointFilterClause(col, search, rootFilter, methodFilter string) (string, []interface{}) {
+	clause := ""
+	var args []interface{}
 	if search != "" {
-		whereClause += " AND positionCaseInsensitive(endpoint, ?) > 0"
-		joinWhereClause += " AND positionCaseInsensitive(e.endpoint, ?) > 0"
+		clause += " AND positionCaseInsensitive(" + col + "endpoint, ?) > 0"
 		args = append(args, search)
 	}
-
 	switch rootFilter {
 	case "root":
-		whereClause += " AND is_root = 1"
-		joinWhereClause += " AND e.is_root = 1"
+		clause += " AND " + col + "is_root = 1"
 	case "non_root":
-		whereClause += " AND is_root = 0"
-		joinWhereClause += " AND e.is_root = 0"
+		clause += " AND " + col + "is_root = 0"
 	}
-
 	if methodFilter != "" {
-		whereClause += " AND startsWith(endpoint, ?)"
-		joinWhereClause += " AND startsWith(e.endpoint, ?)"
-		args = append(args, strings.ToUpper(methodFilter)+" ")
+		clause += " AND startsWith(" + col + "endpoint, ?)"
+		args = append(args, shared.MethodPrefix(methodFilter))
 	}
+	return clause, args
+}
+
+func (e *endpointRepository) FindGroupedByEndpoint(ctx context.Context, projectId uuid.UUID, fromDate, toDate time.Time, page, pageSize int, orderBy string, sortDirection string, search string, rootFilter string, methodFilter string) ([]models.EndpointStats, int64, error) {
+	// Count query uses bare column names; main query uses e. prefix for LEFT JOIN
+	filterClause, filterArgs := endpointFilterClause("", search, rootFilter, methodFilter)
+	joinFilterClause, _ := endpointFilterClause("e.", search, rootFilter, methodFilter)
+	whereClause := "project_id = ? AND recorded_at >= ? AND recorded_at <= ?" + filterClause
+	joinWhereClause := "e.project_id = ? AND e.recorded_at >= ? AND e.recorded_at <= ?" + joinFilterClause
+	args := append([]interface{}{projectId, fromDate, toDate}, filterArgs...)
 
 	// Count unique endpoints
 	var count uint64
@@ -709,41 +708,31 @@ func (e *endpointRepository) GetEndpointStats(ctx context.Context, projectId uui
 }
 
 // GetEndpointStackedChart returns time-bucketed data for top 5 endpoints by metric + "Other"
-func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projectId uuid.UUID, start, end time.Time, intervalMinutes int, metricType string) (*models.EndpointStackedChartResponse, error) {
-	// Step 1: Get top 5 endpoints ranked by selected metric (streams excluded)
-	var rankQuery string
+func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projectId uuid.UUID, start, end time.Time, intervalMinutes int, metricType string, search, rootFilter, methodFilter string) (*models.EndpointStackedChartResponse, error) {
+	filterClause, filterArgs := endpointFilterClause("", search, rootFilter, methodFilter)
+
+	var metricExpr string
 	switch metricType {
 	case "total_time":
-		rankQuery = `SELECT endpoint, count() * quantile(0.5)(duration) / 1000000 as metric_value
-			FROM endpoints
-			WHERE project_id = ? AND recorded_at >= ? AND recorded_at <= ? AND is_stream = 0
-			GROUP BY endpoint
-			ORDER BY metric_value DESC
-			LIMIT 5`
+		metricExpr = "count() * quantile(0.5)(duration) / 1000000"
 	case "p95":
-		rankQuery = `SELECT endpoint, quantile(0.95)(duration) / 1000000 as metric_value
-			FROM endpoints
-			WHERE project_id = ? AND recorded_at >= ? AND recorded_at <= ? AND is_stream = 0
-			GROUP BY endpoint
-			ORDER BY metric_value DESC
-			LIMIT 5`
+		metricExpr = "quantile(0.95)(duration) / 1000000"
 	case "p99":
-		rankQuery = `SELECT endpoint, quantile(0.99)(duration) / 1000000 as metric_value
-			FROM endpoints
-			WHERE project_id = ? AND recorded_at >= ? AND recorded_at <= ? AND is_stream = 0
-			GROUP BY endpoint
-			ORDER BY metric_value DESC
-			LIMIT 5`
+		metricExpr = "quantile(0.99)(duration) / 1000000"
 	default: // p50
-		rankQuery = `SELECT endpoint, quantile(0.5)(duration) / 1000000 as metric_value
-			FROM endpoints
-			WHERE project_id = ? AND recorded_at >= ? AND recorded_at <= ? AND is_stream = 0
-			GROUP BY endpoint
-			ORDER BY metric_value DESC
-			LIMIT 5`
+		metricExpr = "quantile(0.5)(duration) / 1000000"
 	}
 
-	rows, err := chdb.Conn.Query(ctx, rankQuery, projectId, start, end)
+	// Step 1: Get top 5 endpoints ranked by selected metric (streams excluded)
+	rankQuery := `SELECT endpoint, ` + metricExpr + ` as metric_value
+		FROM endpoints
+		WHERE project_id = ? AND recorded_at >= ? AND recorded_at <= ? AND is_stream = 0` + filterClause + `
+		GROUP BY endpoint
+		ORDER BY metric_value DESC
+		LIMIT 5`
+
+	rankArgs := append([]interface{}{projectId, start, end}, filterArgs...)
+	rows, err := chdb.Conn.Query(ctx, rankQuery, rankArgs...)
 	if err != nil {
 		return nil, err
 	}
@@ -768,18 +757,6 @@ func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projec
 	}
 
 	// Step 2: Build the time-bucketed query with top endpoints + "Other"
-	var metricExpr string
-	switch metricType {
-	case "total_time":
-		metricExpr = "count() * quantile(0.5)(duration) / 1000000"
-	case "p95":
-		metricExpr = "quantile(0.95)(duration) / 1000000"
-	case "p99":
-		metricExpr = "quantile(0.99)(duration) / 1000000"
-	default: // p50
-		metricExpr = "quantile(0.5)(duration) / 1000000"
-	}
-
 	caseExpr := "multiIf("
 	for range topEndpoints {
 		caseExpr += "endpoint = ?, ?, "
@@ -791,16 +768,17 @@ func (e *endpointRepository) GetEndpointStackedChart(ctx context.Context, projec
 		` + caseExpr + ` as endpoint_category,
 		` + metricExpr + ` as metric_value
 	FROM endpoints
-	WHERE project_id = ? AND recorded_at >= ? AND recorded_at <= ? AND is_stream = 0
+	WHERE project_id = ? AND recorded_at >= ? AND recorded_at <= ? AND is_stream = 0` + filterClause + `
 	GROUP BY bucket, endpoint_category
 	ORDER BY bucket ASC, endpoint_category ASC`
 
-	args := make([]interface{}, 0, len(topEndpoints)*2+4)
+	args := make([]interface{}, 0, len(topEndpoints)*2+4+len(filterArgs))
 	args = append(args, intervalMinutes)
 	for _, ep := range topEndpoints {
 		args = append(args, ep, ep)
 	}
 	args = append(args, projectId, start, end)
+	args = append(args, filterArgs...)
 
 	rows, err = chdb.Conn.Query(ctx, timeSeriesQuery, args...)
 	if err != nil {

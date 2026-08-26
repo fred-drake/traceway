@@ -47,17 +47,17 @@ type grafanaTarget struct {
 }
 
 var panelTypeMap = map[string]string{
-	"timeseries":  "line_chart",
-	"graph":       "line_chart",
-	"stat":        "single_value",
-	"singlestat":  "single_value",
-	"gauge":       "gauge",
-	"bargauge":    "gauge",
-	"barchart":    "bar_chart",
-	"bar chart":   "bar_chart",
-	"table":       "table",
-	"table-old":   "table",
-	"piechart":    "bar_chart",
+	"timeseries":     "line_chart",
+	"graph":          "line_chart",
+	"stat":           "single_value",
+	"singlestat":     "single_value",
+	"gauge":          "gauge",
+	"bargauge":       "gauge",
+	"barchart":       "bar_chart",
+	"bar chart":      "bar_chart",
+	"table":          "table",
+	"table-old":      "table",
+	"piechart":       "bar_chart",
 	"state-timeline": "line_chart",
 }
 

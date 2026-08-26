@@ -71,9 +71,17 @@
 	}
 
 	$effect(() => {
+		if (!projectsState.loaded) return;
+		const tab = page.url.searchParams.get('tab');
+		if (tab && !tabs.some((t) => t.value === tab)) {
+			setTabParam('overview');
+		}
+	});
+
+	$effect(() => {
 		const organizationId = currentOrganizationId;
 		if (organizationId === null) return;
-		if (singleProject) {
+		if (projectsState.loaded && singleProject) {
 			gotoHref(`/?projectId=${singleProject.id}`, { replaceState: true });
 			return;
 		}
@@ -94,8 +102,10 @@
 	});
 </script>
 
-{#if singleProject}
-	<LoadingCircle size="xlg" />
+{#if !projectsState.loaded || singleProject}
+	<div class="flex h-48 items-center justify-center">
+		<LoadingCircle size="xlg" />
+	</div>
 {:else}
 	<div class="space-y-4">
 		<PageHeader

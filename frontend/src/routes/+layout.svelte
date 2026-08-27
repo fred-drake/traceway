@@ -376,7 +376,7 @@
 				/>
 				{@render accountActions()}
 			</header>
-			<main class="mx-auto w-full max-w-[1600px] p-4 sm:p-6">
+			<main class="mx-auto w-full max-w-[1200px] p-4 sm:p-6">
 				{@render contextNotices()}
 				{@render children()}
 			</main>

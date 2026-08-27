@@ -69,7 +69,12 @@ export default defineConfig(({ mode }) => {
 			// @milkdown/crepe is dynamically imported; pre-bundle it so the first
 			// editor open doesn't trigger a mid-session re-optimization page reload
 			// that strands the editor on its loading state.
-			include: ['d3-scale', 'd3-array', '@lucide/svelte', 'svelte-sonner', '@milkdown/crepe']
+			include: ['d3-scale', 'd3-array', '@lucide/svelte', 'svelte-sonner', '@milkdown/crepe'],
+			// The source-map setup page shows an `import ... from
+			// "@tracewayapp/bundler-plugin/vite"` snippet as text. Vite's dependency
+			// scanner regex-matches it as a real import and fails the whole
+			// pre-bundling scan because the package is not a dependency here.
+			exclude: ['@tracewayapp/bundler-plugin']
 		},
 		server: {
 			proxy: {

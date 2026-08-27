@@ -25,7 +25,8 @@
         go = pkgs."go_${builtins.elemAt goVersion 0}_${builtins.elemAt goVersion 1}";
 
         frontendPackage = builtins.fromJSON (builtins.readFile ./frontend/package.json);
-        nodeMajor = builtins.head (builtins.match "([0-9]+).*" frontendPackage.engines.node);
+        # engines.node is a floor such as ">=22"; the dev shell pins that major.
+        nodeMajor = builtins.head (builtins.match "[^0-9]*([0-9]+).*" frontendPackage.engines.node);
         nodejs = pkgs."nodejs_${nodeMajor}";
 
         goTools = [

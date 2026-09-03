@@ -95,6 +95,16 @@ func (r *logRecord) toModel() models.LogRecord {
 
 type logRecordRepository struct{}
 
+const logRecordColumns = `id, project_id, timestamp, trace_id, span_id, trace_flags,
+		severity_text, severity_number, service_name, body,
+		resource_schema_url, resource_attributes,
+		scope_schema_url, scope_name, scope_version, scope_attributes,
+		log_attributes`
+
+// SQLite caps a compound SELECT at 500 terms; past this many trace ids the
+// page query falls back to the IN form.
+const maxTraceIdBranches = 100
+
 func (r *logRecordRepository) InsertAsync(ctx context.Context, records []models.LogRecord) error {
 	if len(records) == 0 {
 		return nil
@@ -118,8 +128,13 @@ func (r *logRecordRepository) InsertAsync(ctx context.Context, records []models.
 func (r *logRecordRepository) Search(ctx context.Context, params shared.LogSearchParams) ([]models.LogRecord, int64, error) {
 	where, args := r.buildWhere(params)
 
+	traceIdIn := ""
+	if len(params.TraceIds) > 0 {
+		traceIdIn = " AND " + traceIdInClause(params.TraceIds, args)
+	}
+
 	countResult, err := lit.SelectSingleNamed[models.CountResult](db.TelemetryDB,
-		"SELECT COUNT(*) AS count FROM log_records WHERE "+where, args)
+		"SELECT COUNT(*) AS count FROM log_records WHERE "+where+traceIdIn, args)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -148,15 +163,18 @@ func (r *logRecordRepository) Search(ctx context.Context, params shared.LogSearc
 	args["limit"] = params.PageSize
 	args["offset"] = offset
 
-	query := fmt.Sprintf(`SELECT id, project_id, timestamp, trace_id, span_id, trace_flags,
-		severity_text, severity_number, service_name, body,
-		resource_schema_url, resource_attributes,
-		scope_schema_url, scope_name, scope_version, scope_attributes,
-		log_attributes
-	FROM log_records
-	WHERE %s
-	ORDER BY %s %s, id
-	LIMIT :limit OFFSET :offset`, where, orderBy, direction)
+	var query string
+	switch {
+	case len(params.TraceIds) == 0:
+		query = fmt.Sprintf(`SELECT %s FROM log_records WHERE %s ORDER BY %s %s, id LIMIT :limit OFFSET :offset`,
+			logRecordColumns, where, orderBy, direction)
+	case len(params.TraceIds) <= maxTraceIdBranches:
+		args["branch_limit"] = offset + params.PageSize
+		query = perTraceIdPageQuery(where, len(params.TraceIds), orderBy, direction)
+	default:
+		query = fmt.Sprintf(`SELECT %s FROM log_records WHERE %s ORDER BY +%s %s, id LIMIT :limit OFFSET :offset`,
+			logRecordColumns, where+traceIdIn, orderBy, direction)
+	}
 
 	rows, err := lit.SelectNamed[logRecord](db.TelemetryDB, query, args)
 	if err != nil {
@@ -172,12 +190,7 @@ func (r *logRecordRepository) Search(ctx context.Context, params shared.LogSearc
 
 func (r *logRecordRepository) FindByTraceId(ctx context.Context, projectId uuid.UUID, traceId string) ([]models.LogRecord, error) {
 	rows, err := lit.SelectNamed[logRecord](db.TelemetryDB,
-		`SELECT id, project_id, timestamp, trace_id, span_id, trace_flags,
-			severity_text, severity_number, service_name, body,
-			resource_schema_url, resource_attributes,
-			scope_schema_url, scope_name, scope_version, scope_attributes,
-			log_attributes
-		FROM log_records
+		`SELECT `+logRecordColumns+` FROM log_records
 		WHERE project_id = :project_id AND trace_id = :trace_id
 		ORDER BY timestamp ASC`,
 		lit.P{"project_id": projectId, "trace_id": traceId})
@@ -208,15 +221,7 @@ func (r *logRecordRepository) buildWhere(params shared.LogSearchParams) (string,
 		clauses = append(clauses, "service_name = :service_name")
 		args["service_name"] = params.ServiceName
 	}
-	if len(params.TraceIds) > 0 {
-		placeholders := make([]string, len(params.TraceIds))
-		for i, tid := range params.TraceIds {
-			key := fmt.Sprintf("tid%d", i)
-			placeholders[i] = ":" + key
-			args[key] = tid
-		}
-		clauses = append(clauses, "trace_id IN ("+strings.Join(placeholders, ", ")+")")
-	} else if params.TraceId != "" {
+	if params.TraceId != "" {
 		clauses = append(clauses, "trace_id = :trace_id")
 		args["trace_id"] = params.TraceId
 	}
@@ -280,6 +285,35 @@ func (r *logRecordRepository) buildWhere(params shared.LogSearchParams) (string,
 	}
 
 	return strings.Join(clauses, " AND "), args
+}
+
+func traceIdKey(i int) string {
+	return fmt.Sprintf("tid%d", i)
+}
+
+func traceIdInClause(traceIds []string, args lit.P) string {
+	placeholders := make([]string, len(traceIds))
+	for i, tid := range traceIds {
+		key := traceIdKey(i)
+		placeholders[i] = ":" + key
+		args[key] = tid
+	}
+	return "trace_id IN (" + strings.Join(placeholders, ", ") + ")"
+}
+
+// An IN list over trace ids is several disjoint ranges in the trace index, so
+// the planner cannot take ORDER BY timestamp from it and, without sqlite_stat1,
+// walks the whole time window instead (#353). One branch per id is a single
+// seek in index order whatever the stats say; each branch carries enough rows
+// to reach the requested offset before the outer sort merges them.
+func perTraceIdPageQuery(where string, traceIdCount int, orderBy, direction string) string {
+	branches := make([]string, traceIdCount)
+	for i := range branches {
+		branches[i] = fmt.Sprintf(`SELECT * FROM (SELECT %s FROM log_records WHERE %s AND trace_id = :%s ORDER BY %s %s, id LIMIT :branch_limit)`,
+			logRecordColumns, where, traceIdKey(i), orderBy, direction)
+	}
+	return strings.Join(branches, " UNION ALL ") +
+		fmt.Sprintf(" ORDER BY %s %s, id LIMIT :limit OFFSET :offset", orderBy, direction)
 }
 
 func attrColumn(scope string) string {

@@ -2,15 +2,29 @@
 
 package migrations
 
-import "testing"
+import (
+	"database/sql"
+	"slices"
+	"strings"
+	"testing"
 
-// The grouped-list reads for these three tables filter
-// (project_id, <group>, recorded_at). An index that stops at the group column
-// leaves SQLite to seek the (project_id, recorded_at) index and re-filter the
-// group column across the whole window once per group, which is quadratic in
-// the number of groups and invisible to functional tests. Guard the covering
-// indexes so a later migration cannot narrow or drop them unnoticed.
-func TestTelemetryGroupIndexesCoverRecordedAt(t *testing.T) {
+	"github.com/tracewayapp/traceway/backend/app/retention"
+)
+
+// Every per-group telemetry read pairs a group column with the table's time
+// column: as a second filter on the grouped lists, as the ORDER BY on the
+// per-group detail reads. An index that stops at the group column leaves SQLite
+// to either re-filter the group across the whole window once per group, which
+// is quadratic in the number of groups, or seek the group and sort its entire
+// history. Both are unbounded and invisible to functional tests.
+//
+// The first loop guards the indexes behind known reads so a later migration
+// cannot narrow or drop one unnoticed. The second inverts the question: every
+// index that leads with project_id must reach its table's time column, so a
+// short index fails here the day it lands rather than when somebody remembers
+// to list it. Indexes that stop short on purpose are named with the reason,
+// and each entry is itself checked so it cannot outlive the index it excuses.
+func TestTelemetryGroupIndexesCoverTimeColumn(t *testing.T) {
 	telemetryDB := openMemorySQLite(t)
 
 	if err := runMigrationsOn(telemetryDB, migrationsSqliteTelemetryFS, "sqlite_telemetry", "schema_migrations", sqliteTrackingDDL); err != nil {

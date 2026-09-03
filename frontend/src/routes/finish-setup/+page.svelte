@@ -18,7 +18,7 @@
 	import { authState } from '$lib/state/auth.svelte';
 	import { projectsState } from '$lib/state/projects.svelte';
 	import { themeState } from '$lib/state/theme.svelte';
-	import { consumeSsoReturnTo, safeLocalPath } from '$lib/utils/navigation';
+	import { consumeSsoReturnTo, gotoHref, safeLocalPath } from '$lib/utils/navigation';
 	import SetupProjectsStep from '$lib/components/setup/setup-projects-step.svelte';
 
 	let phase = $state<'organization' | 'projects'>('organization');
@@ -63,11 +63,7 @@
 			returnTo = safeLocalPath(consumeSsoReturnTo());
 
 			if (newOrgId === null) {
-				// returnTo is a concrete path from the SSO handoff, not a route id.
-				// resolve() substitutes [params] and throws a TypeError on any path
-				// containing brackets, so prefix the base path directly.
-				// eslint-disable-next-line svelte/no-navigation-without-resolve
-				goto(base + returnTo);
+				gotoHref(returnTo);
 				return;
 			}
 			phase = 'projects';

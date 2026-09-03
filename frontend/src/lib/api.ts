@@ -32,18 +32,11 @@ async function request(method: string, endpoint: string, data?: unknown, options
 	});
 
 	if (authState.token !== token) {
-		throw Object.assign(new Error('Session changed'), { status: 0 });
+		throw Object.assign(new Error('Session changed'), { status: 401 });
 	}
 
 	if (response.status === 401) {
 		authState.logout();
-		const current = window.location.pathname + window.location.search;
-		gotoHref(
-			current === '/' || current.startsWith('/login')
-				? '/login'
-				: `/login?returnTo=${encodeURIComponent(current)}`,
-			{ replaceState: true }
-		);
 		throw Object.assign(new Error('Unauthorized'), { status: 401 });
 	}
 
@@ -56,16 +49,18 @@ async function request(method: string, endpoint: string, data?: unknown, options
 		if (!recovering) {
 			recovering = true;
 			try {
-				const bundle = await request('GET', '/me/login-bundle').catch(() => null);
+				const requestedProjectId = new URL(url, window.location.origin).searchParams.get(
+					'projectId'
+				);
+				const bundle = requestedProjectId
+					? await request('GET', '/me/login-bundle').catch(() => null)
+					: null;
 				if (bundle) {
 					authState.setOrganizations(bundle.organizations ?? []);
 					projectsState.setProjects(bundle.projects ?? []);
 				}
 
 				if (authState.token === token) {
-					const requestedProjectId = new URL(url, window.location.origin).searchParams.get(
-						'projectId'
-					);
 					const staleProject =
 						bundle &&
 						requestedProjectId &&

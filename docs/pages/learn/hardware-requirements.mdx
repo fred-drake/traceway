@@ -8,7 +8,7 @@ There are three shapes:
 
 - **SQLite mode** (single binary, zero external dependencies). The whole stack is one process. This is the lightweight option.
 - **DuckDB mode** (`telemetry_duckdb` build tag, CGO required). Still a single container with zero external dependencies, but the telemetry store is DuckDB's columnar engine, which holds 10 to 100 times more queryable rows than SQLite on the same box. The catch: DuckDB sizes itself from host RAM, so memory-capped containers must set `DUCKDB_MEMORY_LIMIT`.
-- **ClickHouse + PostgreSQL mode** (`transactional_pg telemetry_ch` build tags). ClickHouse is built to use a lot of RAM for caches and merges, so this is the heavier option that scales much further.
+- **ClickHouse + PostgreSQL mode** (`transactional_pg telemetry_ch` build tags). ClickHouse is built to use a lot of RAM for caches and merges, so this is the heavier option that scales much further. It is also the only mode that supports running more than one backend instance; see [Running more than one instance](/server/minimal#running-more-than-one-instance).
 
 ## TL;DR
 

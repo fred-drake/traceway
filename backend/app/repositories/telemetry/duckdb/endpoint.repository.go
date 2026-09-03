@@ -823,10 +823,6 @@ func sortEndpointStats(stats []models.EndpointStats, orderBy string, sortDirecti
 	desc := sortDirection != "asc"
 
 	sort.Slice(stats, func(i, j int) bool {
-		// Descending is the ascending comparison with the operands swapped.
-		// Negating the ascending result instead would return true for both
-		// (i, j) and (j, i) whenever two rows tie, which is not the strict
-		// weak ordering sort.Slice documents a requirement for.
 		if desc {
 			i, j = j, i
 		}

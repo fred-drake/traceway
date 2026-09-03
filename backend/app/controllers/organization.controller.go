@@ -96,7 +96,7 @@ func (c *organizationController) UpdateSettings(ctx *gin.Context) {
 
 	var req UpdateSettingsRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+		middleware.RejectBindError(ctx, err, "Invalid request")
 		return
 	}
 
@@ -122,41 +122,23 @@ type CreateOrganizationRequest struct {
 	Timezone string `json:"timezone"`
 }
 
-func validateOrganizationName(name string) string {
-	nameLen := utf8.RuneCountInString(name)
-	if nameLen < 1 || nameLen > 100 {
-		return "Organization name must be between 1 and 100 characters"
-	}
-	return ""
-}
-
-// Create lets an authenticated user start a new organization they own. Every
-// other org-creating path (register, SSO finish-setup) is an account-creation
-// path, so a user removed from their last organization otherwise has no way
-// back into a usable account.
 func (c *organizationController) Create(ctx *gin.Context) {
 	var request CreateOrganizationRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Organization name is required"})
+		middleware.RejectBindError(ctx, err, "Organization name is required")
 		return
 	}
 
 	name := strings.TrimSpace(request.Name)
-	if message := validateOrganizationName(name); message != "" {
-		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": message})
+	if nameLen := utf8.RuneCountInString(name); nameLen < 1 || nameLen > 100 {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Organization name must be between 1 and 100 characters"})
 		return
 	}
 
-	// Register binds the timezone as required. Here it is optional: the recovery
-	// form sends one, but this is a plain authenticated endpoint a CLI or script
-	// can also reach, and an org whose on-call schedules resolve against UTC is a
-	// better outcome than refusing to create it at all.
 	timezone := strings.TrimSpace(request.Timezone)
 	if timezone == "" {
 		timezone = "UTC"
 	}
-	// On-call schedule resolution is tz-aware calendar math, so an unparseable
-	// zone would surface much later as wrong shift boundaries.
 	if _, err := oncall.LoadTimezone(timezone); err != nil {
 		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
@@ -165,13 +147,7 @@ func (c *organizationController) Create(ctx *gin.Context) {
 	userId := middleware.GetUserId(ctx)
 	tx := db.GetTx(ctx)
 
-	// Self-hosted instances allow exactly one organization; Register enforces the
-	// same rule (as a 409). This answers 422 instead because the message has to
-	// reach the recovery form, and api.ts only extracts bodies from 401/403/422 --
-	// a 409 would surface to the user as "API Error: Conflict".
-	// Without this an authenticated user of any role -- readonly
-	// included -- could mint an organization here and own it, since the route
-	// carries no role guard and OrganizationLimitHook is nil outside cloud.
+	// One organization per self-hosted instance; 422 rather than Register's 409 so the message reaches the recovery form.
 	if config.Config.CloudMode != "true" {
 		hasOrganizations, err := transactional.OrganizationRepository.HasOrganizations(tx)
 		if err != nil {
@@ -217,9 +193,6 @@ func (c *organizationController) Create(ctx *gin.Context) {
 		return
 	}
 
-	// Register and FinishSetup both run these for every new org+owner pair; it is
-	// the cloud build's provisioning seam, so an organization created here must
-	// not skip it.
 	for _, hook := range PostRegistrationHooks {
 		if err := hook(tx, org, user); err != nil {
 			ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("post-registration hook failed: %w", err))

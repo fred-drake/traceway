@@ -67,6 +67,24 @@ Then use `traceway:minimal` instead of `ghcr.io/tracewayapp/traceway:minimal` in
 | `STORAGE_PATH` | Folder for local blob storage. Defaults to `./storage`, which is `/app/storage` in this image. Mount a volume there. Ignored when `STORAGE_TYPE=s3`. | `/app/storage` |
 | `SESSION_RECORDING_RETENTION_DAYS` | Days to keep on-disk session recordings under `STORAGE_PATH/recordings/`. Defaults to `30`. Worker runs hourly and on startup. `0` disables; no effect when `STORAGE_TYPE=s3`. | `30` |
 
+## Running more than one instance
+
+This image is the only one that supports several backend instances behind a load balancer, because everything the instances have to agree on lives in PostgreSQL and ClickHouse:
+
+- **Project tokens.** Each instance keeps the project list in memory to validate SDK tokens. Creating, updating or deleting a project, or rotating a source map token, sends a PostgreSQL `NOTIFY` on the `project_cache_changed` channel inside the write transaction, and every instance listening on that channel reloads the list. An instance that lost its database connection reloads the list as soon as the connection is back, so a change made while it was disconnected is not missed.
+- **Background workers.** The notification outbox, the on-call escalator, the synthetics scheduler and the one-time dashboards backfill take a PostgreSQL advisory lock per tick, so only one instance drains the queue or pages someone even though every instance runs the workers.
+
+What the deployment needs:
+
+- Every instance points at the same PostgreSQL and ClickHouse and carries the same `JWT_SECRET`, so a session issued by one instance is valid on all of them.
+- `STORAGE_TYPE=s3`. With local storage, a source map uploaded through one instance exists only on that instance's disk. See [Blob Storage](/server/storage).
+- `TRUSTED_PROXIES` lists the load balancer. Otherwise every instance sees the balancer's address as the client and all visitors share one rate-limit bucket.
+- Migrations run at startup. Roll instances out one at a time so a single instance applies them before the others start.
+
+Two caches stay per instance: the source map artifact cache and the symbolicator's negative cache, which retries a failed artifact within at most 15 minutes on the instances that did not receive the upload. See [Symbolicator performance](/symbolicator/performance).
+
+The [SQLite](/server/sqlite) and [DuckDB](/server/duckdb) images are single-instance by design: their databases are local files, and their project cache has no way to learn about a write made by another process. The [All-in-One](/server/all-in-one) image bundles both databases inside the container, so it is single-instance as well. Run exactly one container of those images per data volume.
+
 ## SSO (optional)
 
 Adds **Continue with Google** / **Continue with GitHub** buttons to the login and register pages. See the [SSO guide](/learn/sso) for the full provider setup walkthrough.

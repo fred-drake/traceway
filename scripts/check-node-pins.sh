@@ -11,7 +11,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-pinned=$(tr -d '[:space:]v' < .nvmrc)
+pinned=$(tr -d '[:space:]' < .nvmrc)
 if [[ ! $pinned =~ ^[0-9]+$ ]]; then
 	echo "check-node-pins: .nvmrc must hold a bare Node major, got '$pinned'" >&2
 	exit 1

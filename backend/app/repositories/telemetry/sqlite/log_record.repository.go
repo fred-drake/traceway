@@ -130,7 +130,12 @@ func (r *logRecordRepository) Search(ctx context.Context, params shared.LogSearc
 
 	traceIdIn := ""
 	if len(params.TraceIds) > 0 {
-		traceIdIn = " AND " + traceIdInClause(params.TraceIds, args)
+		placeholders := make([]string, len(params.TraceIds))
+		for i, tid := range params.TraceIds {
+			placeholders[i] = fmt.Sprintf(":tid%d", i)
+			args[fmt.Sprintf("tid%d", i)] = tid
+		}
+		traceIdIn = " AND trace_id IN (" + strings.Join(placeholders, ", ") + ")"
 	}
 
 	countResult, err := lit.SelectSingleNamed[models.CountResult](db.TelemetryDB,
@@ -163,6 +168,9 @@ func (r *logRecordRepository) Search(ctx context.Context, params shared.LogSearc
 	args["limit"] = params.PageSize
 	args["offset"] = offset
 
+	// An IN list over trace ids cannot serve ORDER BY from the trace index, so without sqlite_stat1 the
+	// planner walks the whole time window (#353): seek each id, keep enough rows to reach the offset,
+	// merge. Past the branch cap the + on the sort column forces the same index plus an in-memory sort.
 	var query string
 	switch {
 	case len(params.TraceIds) == 0:
@@ -170,7 +178,12 @@ func (r *logRecordRepository) Search(ctx context.Context, params shared.LogSearc
 			logRecordColumns, where, orderBy, direction)
 	case len(params.TraceIds) <= maxTraceIdBranches:
 		args["branch_limit"] = offset + params.PageSize
-		query = perTraceIdPageQuery(where, len(params.TraceIds), orderBy, direction)
+		branches := make([]string, len(params.TraceIds))
+		for i := range branches {
+			branches[i] = fmt.Sprintf(`SELECT * FROM (SELECT %s FROM log_records WHERE %s AND trace_id = :tid%d ORDER BY %s %s, id LIMIT :branch_limit)`,
+				logRecordColumns, where, i, orderBy, direction)
+		}
+		query = strings.Join(branches, " UNION ALL ") + fmt.Sprintf(" ORDER BY %s %s, id LIMIT :limit OFFSET :offset", orderBy, direction)
 	default:
 		query = fmt.Sprintf(`SELECT %s FROM log_records WHERE %s ORDER BY +%s %s, id LIMIT :limit OFFSET :offset`,
 			logRecordColumns, where+traceIdIn, orderBy, direction)
@@ -285,35 +298,6 @@ func (r *logRecordRepository) buildWhere(params shared.LogSearchParams) (string,
 	}
 
 	return strings.Join(clauses, " AND "), args
-}
-
-func traceIdKey(i int) string {
-	return fmt.Sprintf("tid%d", i)
-}
-
-func traceIdInClause(traceIds []string, args lit.P) string {
-	placeholders := make([]string, len(traceIds))
-	for i, tid := range traceIds {
-		key := traceIdKey(i)
-		placeholders[i] = ":" + key
-		args[key] = tid
-	}
-	return "trace_id IN (" + strings.Join(placeholders, ", ") + ")"
-}
-
-// An IN list over trace ids is several disjoint ranges in the trace index, so
-// the planner cannot take ORDER BY timestamp from it and, without sqlite_stat1,
-// walks the whole time window instead (#353). One branch per id is a single
-// seek in index order whatever the stats say; each branch carries enough rows
-// to reach the requested offset before the outer sort merges them.
-func perTraceIdPageQuery(where string, traceIdCount int, orderBy, direction string) string {
-	branches := make([]string, traceIdCount)
-	for i := range branches {
-		branches[i] = fmt.Sprintf(`SELECT * FROM (SELECT %s FROM log_records WHERE %s AND trace_id = :%s ORDER BY %s %s, id LIMIT :branch_limit)`,
-			logRecordColumns, where, traceIdKey(i), orderBy, direction)
-	}
-	return strings.Join(branches, " UNION ALL ") +
-		fmt.Sprintf(" ORDER BY %s %s, id LIMIT :limit OFFSET :offset", orderBy, direction)
 }
 
 func attrColumn(scope string) string {

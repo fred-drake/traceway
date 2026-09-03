@@ -41,7 +41,7 @@ Traceway is an error tracking and monitoring platform consisting of:
 
 Set `JWT_SECRET` (min 32 characters) before running the backend — it is the one variable with no default in the standalone binary (the all-in-one Docker image bakes a public one in via `backend/.env.docker`, which must be overridden in production). `SQLITE_PATH` sets the database location, defaulting to `./traceway.db` in the working directory.
 
-CI on pull requests is opt-in. `backend.yml`, `backend-vulncheck.yml`, `cli.yml`, `cli-lint.yml` and `cli-contract.yml` listen for `pull_request: types: [labeled]` and every job is gated on `github.event.label.name == 'ci'`, so a PR runs nothing until a maintainer applies the `ci` label (only collaborators can), and applying any other label runs nothing either. Each application validates the PR as it is at that moment: to validate later pushes, remove and re-add the label. The same workflows still run on pushes to `main` that touch their paths (`backend/**`, `cli/**`, their own workflow file), on their daily schedules (the two vulnchecks), and from the Actions tab via `workflow_dispatch`.
+CI on pull requests is opt-in. `backend.yml`, `backend-vulncheck.yml`, `cli.yml`, `cli-lint.yml`, `cli-contract.yml` and `frontend.yml` listen for `pull_request: types: [labeled]` and every job is gated on `github.event.label.name == 'ci'`, so a PR runs nothing until a maintainer applies the `ci` label (only collaborators can), and applying any other label runs nothing either. Each application validates the PR as it is at that moment: to validate later pushes, remove and re-add the label. The same workflows still run on pushes to `main` that touch their paths (`backend/**`, `cli/**`, `frontend/**`, `skills/traceway/**` for `cli.yml`, `.nvmrc` for `frontend.yml`, their own workflow file), on their daily schedules (the two vulnchecks), and from the Actions tab via `workflow_dispatch`.
 
 Action versions are watched by `.github/dependabot.yml` (the `github-actions` ecosystem only; npm and Go modules are deliberately not watched there). It opens a weekly PR per group — `actions/*` in one, every third-party action in the other — and deliberately does **not** auto-apply `ci`, so a bot PR passes the same collaborator gate as any other. Label the first-party group to validate it; `golangci/golangci-lint-action` is reachable the same way via `cli-lint.yml`. The rest of the third-party group lands on `release-*.yml`, `benchmark-*.yml` and `traceway-autofix.yml`, which no label reaches — and `workflow_dispatch` is **not** a dry run on the release path: dispatching `release-docs.yml` or `release-website.yml` deploys to Cloudflare for real, and the other `release-*.yml` workflows publish real assets, so dispatching one from an unreviewed bot branch ships it. Validate those by reading the action's release notes instead, and dispatch only where the target is disposable. `traceway-autofix.yml` has no dispatch at all, so its `claude-code-action` pin — the most privileged action here — has no pre-merge validation path. Note too that labelling a PR which touches no gated workflow yields zero checks, which reads like a pass but is silence. Every updatable pin is a bare major tag, so Dependabot only ever proposes major bumps here.
 
@@ -581,7 +581,7 @@ backend/
 │   ├── middleware/
 │   │   ├── auth.go             # Token validation
 │   │   └── gzip.go             # Request decompression
-│   ├── cache/                  # In-memory project token cache
+│   ├── cache/                  # In-memory project cache; on Postgres, replicas refresh each other through LISTEN/NOTIFY (project_cache_changed, sent by the project repository inside the write transaction)
 │   ├── pgdb/                   # PostgreSQL connection manager
 │   └── migrations/
 │       ├── ch/                 # ClickHouse migrations
@@ -757,6 +757,7 @@ Frontend routes: `/ai-traces` (tabs: Traces, Conversations, Users), `/ai-traces/
 **Organization Management**
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
+| POST | `/api/organizations` | App | Create an organization owned by the caller; the recovery path for a user removed from their last organization (self-hosted: 422 once one exists; cloud: `OrganizationLimitHook`). Runs `PostRegistrationHooks` like register and SSO finish-setup |
 | GET | `/api/organizations/:orgId/settings` | Admin | Get org settings |
 | PUT | `/api/organizations/:orgId/settings` | Admin | Update org settings |
 | GET | `/api/organizations/:orgId/members` | Admin | List members |
@@ -935,6 +936,8 @@ In SQLite mode (`DB_TYPE=sqlite`), the backend uses **two separate SQLite databa
 |----------|----------|------|---------|-------------|
 | **Main DB** | `db.DB` | `traceway.db` | PostgreSQL replacement — relational/config data | Yes (`middleware.Transactional`, `db.ExecuteTransaction`) |
 | **Telemetry DB** | `db.TelemetryDB` | `traceway_telemetry.db` | ClickHouse replacement — append-only telemetry | No — direct inserts without transactions |
+
+Both embedded builds (SQLite and DuckDB telemetry) are single-instance: the databases are local files, and the in-memory project cache only learns about another process's writes through the Postgres LISTEN/NOTIFY listener, which exists only under `transactional_pg`. Running more than one backend instance is supported only on the `transactional_pg telemetry_ch` build (docs: `/server/minimal#running-more-than-one-instance`).
 
 **Main DB tables** (`db.DB` — transactional, uses lit with `*sql.Tx`):
 - `users`, `organizations`, `organization_users`, `projects`, `invitations`

@@ -4,9 +4,10 @@ package cache
 
 import (
 	"context"
+	"fmt"
 
-	"github.com/tracewayapp/traceway/backend/app/config"
 	"github.com/tracewayapp/traceway/backend/app/db"
+	traceway "go.tracewayapp.com"
 )
 
 func (c *projectCache) startListener(ctx context.Context) error {
@@ -22,15 +23,12 @@ func (c *projectCache) startListener(ctx context.Context) error {
 			select {
 			case <-ctx.Done():
 				return
-			case notification, ok := <-listener.Notify:
+			case _, ok := <-listener.Notify:
 				if !ok {
 					return
 				}
-				if notification == nil {
-					continue
-				}
 				if err := c.Refresh(ctx); err != nil {
-					config.Logf("project cache refresh failed after notification for project %s: %v", notification.Extra, err)
+					traceway.CaptureException(fmt.Errorf("project cache refresh after notification failed: %w", err))
 				}
 			}
 		}

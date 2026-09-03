@@ -12,6 +12,7 @@
 	import { authState, type UserOrganizationResponse } from '$lib/state/auth.svelte';
 	import { projectsState, type Project } from '$lib/state/projects.svelte';
 	import { api } from '$lib/api';
+	import { getErrorMessage } from '$lib/utils/errors';
 	import SetupProjectsStep from '$lib/components/setup/setup-projects-step.svelte';
 
 	const writableOrgs = $derived(authState.organizations.filter((o) => o.role !== 'readonly'));
@@ -28,37 +29,24 @@
 
 	const selectedOrgName = $derived(writableOrgs.find((o) => o.id === selectedOrgId)?.name ?? '');
 
-	// authState.organizations is hydrated from localStorage and only rewritten on
-	// login, so a membership removed mid-session is still cached here. The layout
-	// pins every zero-project account to this page, which makes it the one screen
-	// that must not act on a stale list.
-	// Deliberately not a render gate: the cached list is right for every case but
-	// the mid-session removal this endpoint exists for, so blocking the page would
-	// tax every onboarding load to avoid one rare branch flip.
-
+	// The cached organization list can be stale after a mid-session removal.
+	let created = false;
 	onMount(async () => {
 		try {
 			const bundle = (await api.get('/me/login-bundle')) as {
 				organizations?: UserOrganizationResponse[];
 				projects?: Project[];
 			};
+			if (created) return;
 			authState.setOrganizations(bundle.organizations || []);
 			projectsState.setProjects(bundle.projects || []);
 		} catch {
-			// Fall back to the cached list rather than stranding the page; a genuinely
-			// expired token is already handled by the 401 path in api.ts.
+			// keep the cached list
 		}
 	});
 
 	const hasNoOrganizations = $derived(authState.organizations.length === 0);
 
-	// A user with no organization is offered a choice before a form, because
-	// creating one is not always the right answer: on a self-hosted instance that
-	// already has an organization the endpoint refuses (422, "ask an administrator
-	// to invite you"), and being removed by an admin is usually followed by an
-	// invitation rather than by starting a rival organization. So the alternative
-	// -- log out and come back when the invite lands -- is a first-class action
-	// here, not something to hunt for in a nav bar this page does not render.
 	let step = $state<'choice' | 'organization'>('choice');
 	let newOrgName = $state('');
 	let timezone = $state(Intl.DateTimeFormat().resolvedOptions().timeZone);
@@ -76,17 +64,13 @@
 				name: newOrgName,
 				timezone
 			})) as UserOrganizationResponse;
-			// Appending flips hasNoOrganizations, which swaps this page over to its
-			// project-setup half -- the /setup the user is meant to land on. A goto()
-			// to the route they are already on would remount for no gain and refetch
-			// the login bundle the response just superseded.
+			created = true;
 			authState.setOrganizations([...authState.organizations, organization]);
-
 			newOrgName = '';
 			toast.success('Successfully created the Organization', { position: 'top-center' });
 		} catch (e) {
-			createError =
-				e instanceof Error && e.message ? e.message : 'Failed to create the organization';
+			createError = getErrorMessage(e, 'Failed to create the organization');
+		} finally {
 			creating = false;
 		}
 	}

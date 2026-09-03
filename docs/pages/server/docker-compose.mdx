@@ -111,6 +111,8 @@ Edit the environment variables in your compose file as needed:
 
 > ClickHouse table TTLs (`metric_points`, `log_records`, etc.) are managed at the schema level; this stack does not run the SQLite retention worker.
 
+To run several backend containers against this stack, see [Running more than one instance](/server/minimal#running-more-than-one-instance): the minimal image is built for that shape, and the databases in this compose file are what the instances share.
+
 ## SSO (optional)
 
 Adds **Continue with Google** / **Continue with GitHub** buttons to the login and register pages. See the [SSO guide](/learn/sso) for the full provider setup walkthrough.

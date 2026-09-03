@@ -50,6 +50,11 @@ func (c *memberController) UpdateRole(ctx *gin.Context) {
 		return
 	}
 
+	if targetRole == currentUserRole {
+		ctx.JSON(http.StatusForbidden, gin.H{"error": "Only owners can change another admin's role"})
+		return
+	}
+
 	if request.Role == "admin" && currentUserRole != "owner" {
 		ctx.JSON(http.StatusForbidden, gin.H{"error": "Only owners can promote members to admin"})
 		return
@@ -85,11 +90,7 @@ func (c *memberController) RemoveMember(ctx *gin.Context) {
 		return
 	}
 
-	currentUserRole, err := transactional.OrganizationRepository.GetUserRole(tx, organizationId, currentUserId)
-	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("Failed to get user role: %w", err))
-		return
-	}
+	currentUserRole := middleware.GetUserOrgRole(ctx)
 	targetRole, err := transactional.OrganizationRepository.GetUserRole(tx, organizationId, targetUserId)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("Failed to get user role: %w", err))
@@ -106,7 +107,7 @@ func (c *memberController) RemoveMember(ctx *gin.Context) {
 	}
 
 	if targetRole == currentUserRole {
-		ctx.JSON(http.StatusForbidden, gin.H{"error": "Cannot remove the user with the same role"})
+		ctx.JSON(http.StatusForbidden, gin.H{"error": "Cannot remove a member with the same role"})
 		return
 	}
 

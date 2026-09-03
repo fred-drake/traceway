@@ -20,11 +20,7 @@ func NewPostgresListener() *pq.Listener {
 	return pq.NewListener(postgresConnectionString(), 10*time.Second, time.Minute, nil)
 }
 
-func NotifyProjectCacheChanged(tx *sql.Tx, projectId uuid.UUID) error {
-	return notifyProjectCacheChanged(tx, projectId)
-}
-
-func notifyProjectCacheChanged(execer interface {
+func NotifyProjectCacheChanged(execer interface {
 	Exec(query string, args ...any) (sql.Result, error)
 }, projectId uuid.UUID) error {
 	_, err := execer.Exec("SELECT pg_notify($1, $2)", ProjectCacheNotificationChannel, projectId.String())

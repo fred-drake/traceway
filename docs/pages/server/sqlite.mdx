@@ -1,10 +1,16 @@
 # SQLite
 
+import { Callout } from "nextra/components";
+
 Smallest possible Traceway deployment: a single Alpine container that uses SQLite for both the main database and telemetry, with the frontend embedded into the Go binary. No external Postgres or ClickHouse required. Blob storage (source maps, session recordings, AI traces) is written to a local folder by default and can optionally be backed by S3.
 
 If your dashboards slow down as telemetry grows, the [DuckDB deployment](/server/duckdb) keeps this exact single-container setup but swaps the telemetry store for a columnar engine with far more read headroom.
 
 All persistent state (both SQLite database files and blob storage) lives under `/data`. Bind-mount that single folder to keep your data across restarts.
+
+<Callout type="info">
+  This image runs as a single instance. Both databases are local files under `/data`, so a second container cannot share them or learn about the first one's writes. Running more than one backend instance needs the PostgreSQL + ClickHouse build; see [Running more than one instance](/server/minimal#running-more-than-one-instance).
+</Callout>
 
 ## Quick Start
 

@@ -231,10 +231,6 @@ func (r *aiTraceRepository) InsertAsync(ctx context.Context, lines []models.AiTr
 	return tx.Commit()
 }
 
-// aiTraceFilterClause appends the AI-traces list's filter to a WHERE clause and
-// binds what it needs into params. Both the query that selects a trace_name and
-// the query that reads its durations go through it, so they cannot filter
-// differently.
 func aiTraceFilterClause(params lit.P, search, rootFilter string) string {
 	clause := ""
 	if search != "" {

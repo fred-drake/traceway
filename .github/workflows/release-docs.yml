@@ -35,10 +35,8 @@ jobs:
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # wrangler-action v4 defaults to the Wrangler 4 CLI, a separate
-          # migration. Pinned so this change is only the runtime move.
-          # Unpinning is tracked in #331.
-          wranglerVersion: "3"
+          # Wrangler 4 is a separate migration; exact so the action cannot resolve a newer 3.x at deploy time.
+          wranglerVersion: "3.114.17"
           workingDirectory: docs
           command: deploy
 

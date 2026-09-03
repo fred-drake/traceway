@@ -4,6 +4,10 @@ import { Callout } from "nextra/components";
 
 Single Docker container with ClickHouse, PostgreSQL, and the Go backend managed by supervisord. Best for simple setups where you want everything in one place.
 
+<Callout type="info">
+  Because both databases live inside the container, this image runs as a single instance. To run several backend instances, point the [minimal image](/server/minimal#running-more-than-one-instance) at shared databases.
+</Callout>
+
 ## Quick Start
 
 Pull the pre-built image from GitHub Container Registry:

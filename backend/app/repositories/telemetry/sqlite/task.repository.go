@@ -168,9 +168,6 @@ func (e *taskRepository) FindAll(ctx context.Context, projectId uuid.UUID, fromD
 	return tasks, count, nil
 }
 
-// taskFilterClause appends the task list's filter to a WHERE clause and binds
-// what it needs into params. Both the query that selects a task and the query
-// that reads its durations go through it, so they cannot filter differently.
 func taskFilterClause(params lit.P, search, rootFilter string) string {
 	clause := ""
 	if search != "" {

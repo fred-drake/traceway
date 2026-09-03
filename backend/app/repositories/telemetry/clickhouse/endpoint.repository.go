@@ -112,9 +112,7 @@ func endpointFilterClause(col, search, rootFilter, methodFilter string) (string,
 		clause += " AND " + col + "is_root = 0"
 	}
 	if methodFilter != "" {
-		// upper() not upperUTF8(): ASCII is the whole of RFC 9110's method token
-		// range, and the embedded backends' UPPER() is ASCII-only, so this keeps
-		// all three answering identically.
+		// upper(), not upperUTF8(): method tokens are ASCII, matching the embedded backends' ASCII-only UPPER().
 		clause += " AND startsWith(upper(" + col + "endpoint), ?)"
 		args = append(args, shared.MethodPrefix(methodFilter))
 	}

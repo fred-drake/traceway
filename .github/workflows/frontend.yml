@@ -9,11 +9,13 @@ on:
     branches: [main]
     paths:
       - "frontend/**"
+      - ".nvmrc"
       - ".github/workflows/frontend.yml"
   pull_request:
     types: [labeled]
     paths:
       - "frontend/**"
+      - ".nvmrc"
       - ".github/workflows/frontend.yml"
   workflow_dispatch:
 
@@ -37,13 +39,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
-      # engines.node in frontend/package.json is the single source of truth for
-      # the Node version -- flake.nix reads that same field to build the dev
-      # shell, so CI and `nix develop` cannot drift.
       - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version-file: frontend/package.json
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 

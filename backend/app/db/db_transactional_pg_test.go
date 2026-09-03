@@ -25,7 +25,7 @@ func TestNotifyProjectCacheChangedIncludesProjectId(t *testing.T) {
 	projectId := uuid.New()
 	execer := &recordingExecer{}
 
-	if err := notifyProjectCacheChanged(execer, projectId); err != nil {
+	if err := NotifyProjectCacheChanged(execer, projectId); err != nil {
 		t.Fatalf("notify project cache changed: %v", err)
 	}
 	if execer.query != "SELECT pg_notify($1, $2)" {

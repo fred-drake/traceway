@@ -10,7 +10,7 @@ function splitHref(href: string): { pathname: string; suffix: string } {
 // throws on the literal brackets a concrete pathname can carry. Prefixing the
 // base path is what a concrete href needs instead.
 export function resolveHref(href: string): string {
-	if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(href)) return href;
+	if (/^(?:https?:|mailto:|tel:|\/\/|#)/i.test(href)) return href;
 	const { pathname, suffix } = splitHref(href);
 	return base + (pathname || '/') + suffix;
 }

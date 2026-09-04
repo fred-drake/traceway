@@ -1,3 +1,4 @@
-import DateTimePicker from "./datetime-picker.svelte";
+import DateTimeCalendar from './datetime-calendar.svelte';
+import DateTimePicker from './datetime-picker.svelte';
 
-export { DateTimePicker };
+export { DateTimeCalendar, DateTimePicker };

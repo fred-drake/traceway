@@ -5,22 +5,22 @@ Send AI traces from [OpenRouter](https://openrouter.ai) to Traceway with zero co
 ## How It Works
 
 1. **OpenRouter routes your AI calls** to the best model provider (OpenAI, Anthropic, Google, etc.)
-2. **Observability broadcasts traces** — OpenRouter sends an OTLP span for each completion with `gen_ai.*` attributes
-3. **Traceway captures and stores** — Model, tokens, costs, duration, and conversation content appear in your AI Traces dashboard
+2. **Observability broadcasts traces**: OpenRouter sends an OTLP span for each completion with `gen_ai.*` attributes
+3. **Traceway captures and stores**: Model, tokens, costs, duration, and conversation content appear in your AI Traces dashboard
 
-No SDK or code changes needed — OpenRouter handles the instrumentation automatically.
+No SDK or code changes are needed. OpenRouter handles the instrumentation automatically.
 
 ## Setup
 
 ### 1. Get Your Traceway Project Token
 
-AI Tracing works with any backend or OpenTelemetry project in Traceway. If you don't have a project yet, create a new one and select **OpenTelemetry** as the framework — this gives you a project token you can use for the OpenRouter integration.
+AI Tracing works with any backend or OpenTelemetry project in Traceway. If you don't have a project yet, create a new one and select **OpenTelemetry** as the framework. This gives you a project token you can use for the OpenRouter integration.
 
 In your Traceway dashboard, go to **Connection** and copy your project token.
 
 ### 2. Configure OpenRouter Observability
 
-1. Go to [OpenRouter Settings → Observability](https://openrouter.ai/settings/integrations)
+1. Go to [OpenRouter Settings → Observability](https://openrouter.ai/settings/observability)
 2. Enable **Broadcast**
 3. Click **Add Destination** next to **OpenTelemetry Collector**
 4. Fill in the connection details:
@@ -33,13 +33,12 @@ In your Traceway dashboard, go to **Connection** and copy your project token.
 
 Replace `YOUR_PROJECT_TOKEN` with your actual project token. If you're self-hosting, replace the endpoint with your instance URL.
 
-5. Click **Test Connection** to verify
-6. Click **Send Trace** to send a test trace
-7. Click **Add** to save
+5. Click **Test Connection** to verify. OpenRouter only saves the destination if the test passes.
+6. Click **Add** to save
 
 ### 3. Verify in Traceway
 
-Open your Traceway dashboard and navigate to **AI Traces**. You should see your test trace appear within a few seconds.
+Make an API request through OpenRouter, then open your Traceway dashboard and navigate to **AI Traces**. The call appears within a few seconds.
 
 ## Configuration Options
 
@@ -56,6 +55,22 @@ Controls what percentage of traces are sent to Traceway. Set to `1` (100%) to ca
 ### API Key Filter
 
 Optionally filter traces to only include calls made with specific API keys. Useful if you have multiple environments sharing the same OpenRouter organization.
+
+### End-User and Conversation Attribution
+
+Two request-level fields unlock Traceway's Conversations and Users analytics. Pass them on every chat completion request:
+
+```json
+{
+  "model": "anthropic/claude-sonnet-5",
+  "messages": [...],
+  "user": "account-8a41",
+  "session_id": "thread-129af3"
+}
+```
+
+- **`user`** (up to 128 characters) identifies the end user of your product and becomes the `user.id` on the trace. Use a stable customer identifier: your internal account id, a tenant id, or an email. Do not pass session ids or random values here; the same user must carry the same value across all their conversations, or the per-user medians on the Users page become meaningless. If you leave it out, calls attribute to your OpenRouter account itself, which makes every customer look like one user. If PII must stay out of telemetry, use an internal id or a hash.
+- **`session_id`** (up to 256 characters, also accepted as the `x-session-id` header) groups requests into one conversation on the Conversations page. Use your chat/thread id, stable for the life of the conversation.
 
 ## What Gets Captured
 
@@ -76,9 +91,12 @@ Every OpenRouter completion generates a trace with:
 | Finish Reason | `gen_ai.response.finish_reason` | `stop` |
 | Prompt | `gen_ai.prompt` | Full messages JSON |
 | Completion | `gen_ai.completion` | Full response JSON |
-| User ID | `user.id` | Your OpenRouter user/org ID |
-| Trace Name | `trace.name` | Workflow identifier |
+| User ID | `user.id` | The `user` field from your request; falls back to your OpenRouter account id |
+| Conversation | `session.id` | The `session_id` field from your request |
+| Trace Name | Span name | Set it with `trace_name` inside the request's `trace` object |
 | Temperature | `gen_ai.request.temperature` | `0.7` |
+
+Any other key you pass in the request's `trace` object arrives as a `trace.metadata.*` span attribute and shows up in the metadata list on the call detail page.
 
 ## Self-Hosted Setup
 
@@ -88,9 +106,9 @@ If you're running Traceway on your own infrastructure, use your instance URL as 
 https://your-traceway-instance.com/api/otel/v1/traces
 ```
 
-The rest of the configuration is identical — project token in the Authorization header, same format.
+The rest of the configuration is identical: project token in the Authorization header, same format.
 
 ## Next Steps
 
-- [AI Tracing concepts](/learn/ai-tracing) — Understand how AI traces are stored and queried
-- [OpenTelemetry](/client/otel) — Send traces from any OTel-instrumented application
+- [AI Tracing concepts](/learn/ai-tracing): Understand how AI traces are stored and queried
+- [OpenTelemetry](/client/otel): Send traces from any OTel-instrumented application

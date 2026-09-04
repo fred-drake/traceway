@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { TriangleAlert, CheckCircle } from 'lucide-svelte';
+	import { TriangleAlert, CheckCircle } from '@lucide/svelte';
 	import * as Tooltip from '$lib/components/ui/tooltip';
 
 	let {
@@ -40,7 +40,7 @@
 			case 'medium':
 				return {
 					bg: 'bg-yellow-500/15',
-					text: 'text-yellow-600 dark:text-yellow-500',
+					text: 'text-yellow-600 dark:text-yellow-400',
 					label: 'Medium',
 					icon: 'alert'
 				};

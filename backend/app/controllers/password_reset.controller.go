@@ -1,11 +1,14 @@
 package controllers
 
 import (
-	"github.com/tracewayapp/traceway/backend/app/db"
-	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
-	"github.com/tracewayapp/traceway/backend/app/services"
 	"database/sql"
+	"fmt"
+	"github.com/tracewayapp/traceway/backend/app/config"
+	"github.com/tracewayapp/traceway/backend/app/db"
+	"github.com/tracewayapp/traceway/backend/app/middleware"
+	"github.com/tracewayapp/traceway/backend/app/models"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
+	"github.com/tracewayapp/traceway/backend/app/services"
 	"net/http"
 	"time"
 
@@ -20,15 +23,20 @@ const resetTokenExpiry = 1 * time.Hour
 const resetRateLimitPeriod = 1 * time.Hour
 
 func (c *passwordResetController) ForgotPassword(ctx *gin.Context) {
+	if config.Config.PasswordLoginDisabled() {
+		ctx.JSON(http.StatusForbidden, gin.H{"error": passwordLoginDisabledMessage})
+		return
+	}
+
 	tx := db.GetTx(ctx)
 
 	var request models.ForgotPasswordRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
-	user, err := repositories.UserRepository.FindByEmail(tx, request.Email)
+	user, err := transactional.UserRepository.FindByEmail(tx, request.Email)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("Failed to find user: %w", err))
 		return
@@ -47,22 +55,31 @@ func (c *passwordResetController) ForgotPassword(ctx *gin.Context) {
 	token := uuid.New().String()
 	expiresAt := time.Now().Add(resetTokenExpiry)
 
-	err = repositories.UserRepository.SetPasswordResetToken(tx, user.Id, token, expiresAt)
+	err = transactional.UserRepository.SetPasswordResetToken(tx, user.Id, token, expiresAt)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("Failed to set reset token: %w", err))
 		return
 	}
 
-	go services.EmailService.SendPasswordReset(user.Email, token)
+	go func() {
+		if err := services.EmailService.SendPasswordReset(user.Email, token); err != nil {
+			traceway.CaptureException(fmt.Errorf("failed to send password reset email to %s: %w", user.Email, err))
+		}
+	}()
 
 	ctx.JSON(http.StatusOK, gin.H{"message": "If an account exists with this email, a password reset link will be sent to it."})
 }
 
 func (c *passwordResetController) ValidateToken(ctx *gin.Context) {
+	if config.Config.PasswordLoginDisabled() {
+		ctx.JSON(http.StatusForbidden, gin.H{"error": passwordLoginDisabledMessage})
+		return
+	}
+
 	token := ctx.Param("token")
 
 	user, err := db.ExecuteTransaction(func(tx *sql.Tx) (*models.User, error) {
-		return repositories.UserRepository.FindByPasswordResetToken(tx, token)
+		return transactional.UserRepository.FindByPasswordResetToken(tx, token)
 	})
 
 	if err != nil {
@@ -87,16 +104,21 @@ func (c *passwordResetController) ValidateToken(ctx *gin.Context) {
 }
 
 func (c *passwordResetController) ResetPassword(ctx *gin.Context) {
+	if config.Config.PasswordLoginDisabled() {
+		ctx.JSON(http.StatusForbidden, gin.H{"error": passwordLoginDisabledMessage})
+		return
+	}
+
 	tx := db.GetTx(ctx)
 	token := ctx.Param("token")
 
 	var request models.ResetPasswordRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
-	user, err := repositories.UserRepository.FindByPasswordResetToken(tx, token)
+	user, err := transactional.UserRepository.FindByPasswordResetToken(tx, token)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("Failed to find user: %w", err))
 		return
@@ -118,13 +140,13 @@ func (c *passwordResetController) ResetPassword(ctx *gin.Context) {
 		return
 	}
 
-	err = repositories.UserRepository.UpdatePassword(tx, user.Id, hashedPassword)
+	err = transactional.UserRepository.UpdatePassword(tx, user.Id, hashedPassword)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("Failed to update password: %w", err))
 		return
 	}
 
-	err = repositories.UserRepository.ClearPasswordResetToken(tx, user.Id)
+	err = transactional.UserRepository.ClearPasswordResetToken(tx, user.Id)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("Failed to clear reset token: %w", err))
 		return

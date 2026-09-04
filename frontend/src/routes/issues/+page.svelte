@@ -1,5 +1,7 @@
 <script lang="ts">
+	import { getErrorMessage } from '$lib/utils/errors';
 	import { onMount, onDestroy } from 'svelte';
+	import { SvelteSet } from 'svelte/reactivity';
 	import { browser } from '$app/environment';
 	import { createRowClickHandler } from '$lib/utils/navigation';
 	import { api } from '$lib/api';
@@ -17,6 +19,9 @@
 	import { TableEmptyState } from '$lib/components/ui/table-empty-state';
 	import { PaginationFooter } from '$lib/components/ui/pagination-footer';
 	import { TimeRangePicker } from '$lib/components/ui/time-range-picker';
+	import PageHeader from '$lib/components/traceway/page-header.svelte';
+	import BulkActionsBar from '$lib/components/traceway/bulk-actions-bar.svelte';
+	import TableContainer from '$lib/components/traceway/table-container.svelte';
 	import { CalendarDate } from '@internationalized/date';
 	import {
 		parseTimeRangeFromUrl,
@@ -36,6 +41,7 @@
 	import Button from '$lib/components/ui/button/button.svelte';
 
 	const timezone = $derived(getTimezone());
+	const initialTimezone = getTimezone();
 
 	// Sort state (persisted to localStorage)
 	const SORT_STORAGE_KEY = 'issues';
@@ -90,14 +96,14 @@
 	}
 
 	const initialUrlParams = parseIssuesUrlParams();
-	const initialRange = getResolvedTimeRange(initialUrlParams, timezone);
+	const initialRange = getResolvedTimeRange(initialUrlParams, initialTimezone);
 
 	// Time range state
 	let selectedPreset = $state<string | null>(initialUrlParams.preset);
-	let fromDate = $state<CalendarDate>(dateToCalendarDate(initialRange.from, timezone));
-	let toDate = $state<CalendarDate>(dateToCalendarDate(initialRange.to, timezone));
-	let fromTime = $state(dateToTimeString(initialRange.from, timezone));
-	let toTime = $state(dateToTimeString(initialRange.to, timezone));
+	let fromDate = $state<CalendarDate>(dateToCalendarDate(initialRange.from, initialTimezone));
+	let toDate = $state<CalendarDate>(dateToCalendarDate(initialRange.to, initialTimezone));
+	let fromTime = $state(dateToTimeString(initialRange.from, initialTimezone));
+	let toTime = $state(dateToTimeString(initialRange.to, initialTimezone));
 
 	// Search state (manual trigger only)
 	let searchQuery = $state(initialUrlParams.search);
@@ -108,14 +114,6 @@
 		{ value: 'all', label: 'All' },
 		{ value: 'issues', label: 'Issues' },
 		{ value: 'messages', label: 'Messages' }
-	];
-
-	// Page size options
-	const pageSizeOptions = [
-		{ value: '10', label: '10' },
-		{ value: '20', label: '20' },
-		{ value: '50', label: '50' },
-		{ value: '100', label: '100' }
 	];
 
 	// Helper functions for date/time conversion
@@ -191,9 +189,9 @@
 
 			// Clear selection when data changes
 			selectedHashes = new Set();
-		} catch (e: any) {
+		} catch (e) {
 			console.error(e);
-			error = e.message || 'Failed to load data';
+			error = getErrorMessage(e) || 'Failed to load data';
 		} finally {
 			loading = false;
 		}
@@ -264,7 +262,7 @@
 	}
 
 	function toggleSelect(hash: string) {
-		const newSet = new Set(selectedHashes);
+		const newSet = new SvelteSet(selectedHashes);
 		if (newSet.has(hash)) {
 			newSet.delete(hash);
 		} else {
@@ -278,7 +276,7 @@
 	}
 
 	// Archive handler
-	async function archiveSelected() {
+	async function archiveSelected(resolvePages: boolean) {
 		if (selectedHashes.size === 0) return;
 
 		archiving = true;
@@ -286,19 +284,18 @@
 			await api.post(
 				'/exception-stack-traces/archive',
 				{
-					hashes: Array.from(selectedHashes)
+					hashes: Array.from(selectedHashes),
+					resolvePages
 				},
 				{ projectId: projectsState.currentProjectId ?? undefined }
 			);
 
-			toast.success('Successfully archived the Issue' + (selectedHashes.size > 1 ? 's' : ''), {
-				position: 'top-center'
-			});
+			toast.success('Successfully archived the Issue' + (selectedHashes.size > 1 ? 's' : ''));
 			selectedHashes = new Set();
 			await loadData();
-		} catch (e: any) {
+		} catch (e) {
 			console.error('Archive failed:', e);
-			error = e.message || 'Failed to archive issues';
+			error = getErrorMessage(e) || 'Failed to archive issues';
 			throw e;
 		} finally {
 			archiving = false;
@@ -318,10 +315,8 @@
 </script>
 
 <div class="space-y-4">
-	<!-- Row 1: Title + TimeRangePicker -->
-	<div class="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-		<h2 class="text-2xl font-bold tracking-tight">Issues</h2>
-		<div class="w-full sm:w-auto">
+	<PageHeader title="Issues">
+		{#snippet actions()}
 			<TimeRangePicker
 				bind:fromDate
 				bind:toDate
@@ -330,10 +325,9 @@
 				bind:preset={selectedPreset}
 				onApply={handleTimeRangeChange}
 			/>
-		</div>
-	</div>
+		{/snippet}
+	</PageHeader>
 
-	<!-- Row 2: Search -->
 	<SearchBar
 		placeholder="Search exceptions..."
 		bind:value={searchQuery}
@@ -343,31 +337,25 @@
 		disabled={loading}
 	/>
 
-	<!-- Archive Toolbar - shown when items selected -->
 	{#if selectedCount > 0}
-		<div
-			class="flex animate-in items-center gap-3 rounded-lg border bg-muted/50 p-3 duration-200 fade-in slide-in-from-top-1"
+		<BulkActionsBar
+			count={selectedCount}
+			itemLabel="issue"
+			onClear={() => (selectedHashes = new Set())}
 		>
-			<span class="text-sm font-medium"
-				>{selectedCount} issue{selectedCount === 1 ? '' : 's'} selected</span
-			>
 			<Button
 				variant="outline"
 				size="sm"
 				onclick={() => (showArchiveDialog = true)}
 				disabled={archiving}
-				class="gap-1.5"
 			>
-				<Archive class="h-4 w-4" />
+				<Archive class="mr-2 h-4 w-4" />
 				Archive
 			</Button>
-			<Button variant="ghost" size="sm" onclick={() => (selectedHashes = new Set())}>
-				Clear selection
-			</Button>
-		</div>
+		</BulkActionsBar>
 	{/if}
 
-	<div class="overflow-hidden rounded-md border">
+	<TableContainer>
 		<Table.Root>
 			{#if loading}
 				<Table.Body>
@@ -434,7 +422,7 @@
 				<Table.Body>
 					{#each exceptions as exception (exception.exceptionHash)}
 						<Table.Row
-							class="group cursor-pointer hover:bg-muted/50"
+							class="group cursor-pointer"
 							data-state={isSelected(exception.exceptionHash) ? 'selected' : undefined}
 						>
 							<Table.Cell class="pl-4" onclick={(e) => e.stopPropagation()}>
@@ -444,9 +432,12 @@
 									aria-label="Select row"
 								/>
 							</Table.Cell>
+							{@const firstLine = exception.stackTrace.split('\n')[0]}
+							{@const colonIndex = firstLine.indexOf(':')}
+							{@const errorType = colonIndex > 0 ? firstLine.slice(0, colonIndex) : firstLine}
+							{@const errorMessage = colonIndex > 0 ? firstLine.slice(colonIndex + 1).trim() : ''}
 							<Table.Cell
-								class="max-w-[400px] truncate font-mono text-sm"
-								title={exception.stackTrace}
+								class="max-w-[520px] py-3"
 								onclick={createRowClickHandler(
 									`/issues/${exception.exceptionHash}`,
 									'preset',
@@ -454,7 +445,16 @@
 									'to'
 								)}
 							>
-								<span class="text-foreground">{exception.stackTrace.split('\n')[0]}</span>
+								<div class="min-w-0">
+									<div
+										class="truncate text-[15px]/6 font-semibold text-foreground group-hover:text-primary dark:group-hover:text-blue-300"
+									>
+										{errorType}
+									</div>
+									{#if errorMessage}
+										<div class="truncate text-sm text-muted-foreground">{errorMessage}</div>
+									{/if}
+								</div>
 							</Table.Cell>
 							<Table.Cell
 								onclick={createRowClickHandler(
@@ -467,7 +467,7 @@
 								<IssueTrendChart trend={exception.hourlyTrend || []} />
 							</Table.Cell>
 							<Table.Cell
-								class="text-right font-medium tabular-nums"
+								class="text-right text-[15px] font-semibold tabular-nums"
 								onclick={createRowClickHandler(
 									`/issues/${exception.exceptionHash}`,
 									'preset',
@@ -478,7 +478,7 @@
 								{exception.count.toLocaleString()}
 							</Table.Cell>
 							<Table.Cell
-								class="text-muted-foreground"
+								class="text-muted-foreground tabular-nums"
 								onclick={createRowClickHandler(
 									`/issues/${exception.exceptionHash}`,
 									'preset',
@@ -493,7 +493,7 @@
 				</Table.Body>
 			{/if}
 		</Table.Root>
-	</div>
+	</TableContainer>
 
 	<!-- Pagination Footer -->
 	<PaginationFooter
@@ -512,5 +512,6 @@
 	open={showArchiveDialog}
 	onOpenChange={(open) => (showArchiveDialog = open)}
 	count={selectedCount}
+	hashes={Array.from(selectedHashes)}
 	onConfirm={archiveSelected}
 />

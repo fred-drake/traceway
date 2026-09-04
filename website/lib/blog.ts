@@ -1,14 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import matter from "gray-matter";
+import type { Metadata } from "next";
 
 const BLOG_DIR = path.join(process.cwd(), "content", "blog");
+
+export type BlogCategory = "release" | "engineering";
 
 export type BlogPostMeta = {
   slug: string;
   title: string;
   date: string;
   version?: string;
+  category: BlogCategory;
+  description?: string;
+  author?: string;
+  image?: string;
 };
 
 export type BlogPost = BlogPostMeta & {
@@ -23,7 +30,23 @@ function readPostFile(filename: string): BlogPost | null {
   const title = typeof data.title === "string" ? data.title : slug;
   const date = typeof data.date === "string" ? data.date : "";
   const version = typeof data.version === "string" ? data.version : undefined;
-  return { slug, title, date, version, content };
+  const category: BlogCategory =
+    data.category === "engineering" ? "engineering" : "release";
+  const description =
+    typeof data.description === "string" ? data.description : undefined;
+  const author = typeof data.author === "string" ? data.author : undefined;
+  const image = typeof data.image === "string" ? data.image : undefined;
+  return {
+    slug,
+    title,
+    date,
+    version,
+    category,
+    description,
+    author,
+    image,
+    content,
+  };
 }
 
 export function getAllPosts(): BlogPostMeta[] {
@@ -36,9 +59,45 @@ export function getAllPosts(): BlogPostMeta[] {
     .map(({ content: _content, ...meta }) => meta);
 }
 
+export function getPostsByCategory(category: BlogCategory): BlogPostMeta[] {
+  return getAllPosts().filter((p) => p.category === category);
+}
+
 export function getPostBySlug(slug: string): BlogPost | null {
   const filename = `${slug}.mdx`;
   const filepath = path.join(BLOG_DIR, filename);
   if (!fs.existsSync(filepath)) return null;
   return readPostFile(filename);
+}
+
+export function postHref(p: { slug: string; category: BlogCategory }): string {
+  return p.category === "engineering"
+    ? `/blog/${p.slug}`
+    : `/releases/${p.slug}`;
+}
+
+export function postMetadata(post: BlogPost): Metadata {
+  const title = `${post.title} · Traceway`;
+  const description =
+    post.description ??
+    (post.category === "engineering"
+      ? `${post.title}, from the Traceway engineering blog.`
+      : `Release notes for Traceway ${post.title}.`);
+  if (!post.image) return { title, description };
+  return {
+    title,
+    description,
+    openGraph: {
+      title,
+      description,
+      type: "article",
+      images: [{ url: post.image, width: 1200, height: 630 }],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title,
+      description,
+      images: [post.image],
+    },
+  };
 }

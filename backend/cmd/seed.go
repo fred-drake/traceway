@@ -7,8 +7,9 @@ import (
 	"github.com/tracewayapp/traceway/backend/app/config"
 	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 	"github.com/tracewayapp/traceway/backend/app/services"
+	"github.com/tracewayapp/traceway/backend/app/services/contentflag"
 
 	"github.com/google/uuid"
 	"github.com/tracewayapp/lit/v2"
@@ -20,7 +21,7 @@ func seed(opts *options) error {
 	}
 
 	_, err := db.ExecuteTransaction(func(tx *sql.Tx) (struct{}, error) {
-		existing, err := repositories.UserRepository.FindByEmail(tx, opts.defaultUser.email)
+		existing, err := transactional.UserRepository.FindByEmail(tx, opts.defaultUser.email)
 		if err != nil {
 			return struct{}{}, err
 		}
@@ -34,29 +35,34 @@ func seed(opts *options) error {
 			return struct{}{}, err
 		}
 
-		user, err := repositories.UserRepository.Create(tx, opts.defaultUser.email, "Admin", hash)
+		user, err := transactional.UserRepository.Create(tx, opts.defaultUser.email, "Admin", hash)
 		if err != nil {
 			return struct{}{}, err
 		}
 
-		org, err := repositories.OrganizationRepository.Create(tx, "Default", "UTC")
+		org, err := transactional.OrganizationRepository.Create(tx, "Default", "UTC")
 		if err != nil {
 			return struct{}{}, err
 		}
 
-		_, err = repositories.OrganizationRepository.AddUser(tx, org.Id, user.Id, "owner")
+		_, err = transactional.OrganizationRepository.AddUser(tx, org.Id, user.Id, "owner")
 		if err != nil {
 			return struct{}{}, err
 		}
 
 		for _, p := range opts.defaultProjects {
 			project := &models.Project{
-				Id:             uuid.New(),
-				Name:           p.name,
-				Token:          p.token,
-				Framework:      p.framework,
-				OrganizationId: &org.Id,
-				CreatedAt:      time.Now().UTC(),
+				Id:                 uuid.New(),
+				Name:               p.name,
+				Token:              p.token,
+				Framework:          p.framework,
+				OrganizationId:     &org.Id,
+				CreatedAt:          time.Now().UTC(),
+				AiFlaggedLanguages: models.StringSlice(contentflag.DefaultLanguages),
+			}
+			if p.sourceMapToken != "" {
+				token := p.sourceMapToken
+				project.SourceMapToken = &token
 			}
 			if err := lit.InsertExistingUuid(tx, project); err != nil {
 				return struct{}{}, err

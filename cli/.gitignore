@@ -1,0 +1,5 @@
+.direnv/
+.go/
+bin/
+.envrc.local
+dist/

@@ -1,0 +1,30 @@
+services:
+  traceway:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.duckdb
+    ports:
+      - "${BENCH_PORT:-8087}:80"
+    environment:
+      JWT_SECRET: "bench-jwt-secret-not-for-production-use-only-32chars+"
+      HEALTH_DEEP_TOKEN: "bench-health-token-not-for-production"
+      SQLITE_RETENTION_DAYS: "0"
+      SESSION_RECORDING_RETENTION_DAYS: "0"
+      DUCKDB_CHECKPOINT_THRESHOLD: "${DUCKDB_CHECKPOINT_THRESHOLD:-256MB}"
+      # Without a cap DuckDB assumes ~80% of host RAM for itself and the Go
+      # ingest path OOM-storms the whole box under fat-batch load — observed
+      # taking dockerd down with it on ccx13.
+      DUCKDB_MEMORY_LIMIT: "${DUCKDB_MEMORY_LIMIT:-4GB}"
+      GIN_MODE: "release"
+    volumes:
+      - traceway-bench-duckdb-data:/data
+    restart: on-failure:3
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 5s
+      timeout: 3s
+      start_period: 10s
+      retries: 20
+
+volumes:
+  traceway-bench-duckdb-data:

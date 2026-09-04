@@ -1,0 +1,54 @@
+# Lint policy for the CLI module. `just check` is the documented pre-commit
+# gate, and CI enforces it (.github/workflows/cli-lint.yml).
+#
+# Exclusions are kept narrow. Where the codebase already checks a function's
+# error somewhere, the unactionable call sites get an explicit `_ =` instead of
+# a module-wide exclusion, so the linter keeps guarding the sites that matter.
+version: "2"
+
+run:
+  # cli/test/smoke sits behind //go:build smoke, so the default package load
+  # cannot see it. It is the module's largest end-to-end surface; lint it too.
+  build-tags:
+    - smoke
+
+linters:
+  settings:
+    errcheck:
+      exclude-functions:
+        # Cleanup of a temp file the happy path has already renamed away.
+        # A failure here means the file is gone, which is the goal.
+        - os.Remove
+        # A response body being abandoned: the status code and any decode
+        # error are what the caller acts on.
+        - (io.ReadCloser).Close
+
+    staticcheck:
+      # golangci-lint's default set, minus one check. Spelled out because bare
+      # "all" is wider than the default: it turns on the ST1003 naming checks,
+      # which would rename Id -> ID across the client's wire structs.
+      checks:
+        - all
+        - -ST1000
+        - -ST1003
+        - -ST1016
+        - -ST1020
+        - -ST1021
+        - -ST1022
+        # QF1008 wants in.timeRangeIn.resolve() shortened to in.resolve().
+        # Naming the embedded struct documents which mixin supplies the method,
+        # which is worth more than the saved characters.
+        - -QF1008
+
+# gofmt only, not gofumpt: gofmt is the language's own baseline, so gating it
+# costs no style debate. The dev shell ships gofumpt for anyone who wants the
+# stricter pass locally.
+formatters:
+  enable:
+    - gofmt
+
+issues:
+  # A gate should show everything it found. The defaults cap output at 50 per
+  # linter and 3 per identical message, which silently hides real hits.
+  max-issues-per-linter: 0
+  max-same-issues: 0

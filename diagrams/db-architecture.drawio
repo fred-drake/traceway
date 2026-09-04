@@ -1,0 +1,117 @@
+<mxfile host="app.diagrams.net" version="29.3.6">
+  <diagram name="Page-1" id="db-architecture-1">
+    <mxGraphModel dx="815" dy="558" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1500" pageHeight="1050" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="consumers" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Controllers, services, workers&lt;/b&gt;&lt;br&gt;&lt;i&gt;import the facade packages only: transactional.UserRepository, telemetry.SpanRepository, never a backend package directly&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="1180" x="200" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="lmain" parent="1" style="swimlane;whiteSpace=wrap;html=1;collapsible=0;startSize=28;" value="Main DB: db.DB (relational / config)" vertex="1">
+          <mxGeometry height="330" width="600" x="80" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="lfac" parent="lmain" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;" value="&lt;b&gt;repositories/transactional facade&lt;/b&gt;&lt;br&gt;&lt;i&gt;transactional_sqlite.go (default) | transactional_pg.go (-tags transactional_pg)&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="560" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="lchar" parent="lmain" style="rounded=0;whiteSpace=wrap;html=1;fontSize=11;align=left;spacingLeft=8;spacingRight=8;" value="&lt;b&gt;Transactions required:&lt;/b&gt; middleware.Transactional / db.ExecuteTransaction (*sql.Tx)&lt;br&gt;&lt;i&gt;users, organizations, projects, invitations, widgets, metric_registry, notification config, personal_access_tokens, refresh_tokens, device_authorizations&lt;/i&gt;&lt;br&gt;&lt;i&gt;pg/ and sqlite/ are dialect-neutral twins, parity_test.go enforces byte-for-byte equality&lt;/i&gt;" vertex="1">
+          <mxGeometry height="105" width="560" x="20" y="115" as="geometry" />
+        </mxCell>
+        <mxCell id="limp1" parent="lmain" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;sqlite/&lt;/b&gt;" vertex="1">
+          <mxGeometry height="55" width="170" x="20" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="limp2" parent="lmain" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;pg/&lt;/b&gt;" vertex="1">
+          <mxGeometry height="55" width="170" x="210" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="limp3" parent="lmain" style="rounded=0;whiteSpace=wrap;html=1;fontSize=11;" value="&lt;b&gt;shared/&lt;/b&gt;&lt;br&gt;&lt;i&gt;token hashing,&lt;br&gt;facade structs&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="180" x="400" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="rtel" parent="1" style="swimlane;whiteSpace=wrap;html=1;collapsible=0;startSize=28;" value="Telemetry DB: db.TelemetryDB (append-only telemetry)" vertex="1">
+          <mxGeometry height="330" width="680" x="740" y="170" as="geometry" />
+        </mxCell>
+        <mxCell id="rfac" parent="rtel" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;" value="&lt;b&gt;repositories/telemetry facade&lt;/b&gt;&lt;br&gt;&lt;i&gt;telemetry_sqlite.go (default) | telemetry_duckdb.go (-tags telemetry_duckdb) | telemetry_ch.go (-tags telemetry_ch)&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="640" x="20" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="rchar" parent="rtel" style="rounded=0;whiteSpace=wrap;html=1;fontSize=11;align=left;spacingLeft=8;spacingRight=8;" value="&lt;b&gt;No transactions:&lt;/b&gt; batch InsertAsync only (ClickHouse PrepareBatch / DuckDB Appender / direct lit inserts)&lt;br&gt;&lt;i&gt;endpoints, tasks, ai_traces, spans, exception_stack_traces, metric_points, log_records, sessions, session_recordings, profiles, fired_notifications, archived_exceptions, slow_endpoints&lt;/i&gt;" vertex="1">
+          <mxGeometry height="105" width="640" x="20" y="115" as="geometry" />
+        </mxCell>
+        <mxCell id="rimp1" parent="rtel" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;sqlite/&lt;/b&gt;" vertex="1">
+          <mxGeometry height="55" width="115" x="20" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="rimp2" parent="rtel" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;duckdb/&lt;/b&gt;" vertex="1">
+          <mxGeometry height="55" width="115" x="150" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="rimp3" parent="rtel" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;clickhouse/&lt;/b&gt;" vertex="1">
+          <mxGeometry height="55" width="120" x="280" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="rimp4" parent="rtel" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" value="&lt;b&gt;sqlitetypes/&lt;/b&gt;&lt;br&gt;&lt;i&gt;scan types for&lt;br&gt;sqlite + duckdb&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="115" x="415" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="rimp5" parent="rtel" style="rounded=0;whiteSpace=wrap;html=1;fontSize=10;" value="&lt;b&gt;shared/&lt;/b&gt;&lt;br&gt;&lt;i&gt;helpers for all&lt;br&gt;backends&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="115" x="545" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="engsm" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;SQLite (main)&lt;/b&gt;&lt;br&gt;&lt;i&gt;SQLITE_PATH, default ./traceway.db&lt;br&gt;no credentials, single file&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="280" x="80" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="engpg" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;PostgreSQL (main)&lt;/b&gt;&lt;br&gt;&lt;i&gt;POSTGRES_HOST / PORT / DATABASE /&lt;br&gt;USERNAME / PASSWORD / SSLMODE&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="290" x="390" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="engst" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;SQLite (telemetry)&lt;/b&gt;&lt;br&gt;&lt;i&gt;traceway_telemetry.db,&lt;br&gt;derived from SQLITE_PATH&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="215" x="740" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="engdd" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fontSize=11;" value="&lt;b&gt;DuckDB (telemetry)&lt;/b&gt;&lt;br&gt;&lt;i&gt;traceway_telemetry.duckdb&lt;br&gt;DUCKDB_MEMORY_LIMIT / THREADS /&lt;br&gt;CHECKPOINT_THRESHOLD&lt;br&gt;CGO required, glibc only&lt;/i&gt;" vertex="1">
+          <mxGeometry height="100" width="225" x="975" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="engch" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;ClickHouse (telemetry)&lt;/b&gt;&lt;br&gt;&lt;i&gt;CLICKHOUSE_SERVER / DATABASE /&lt;br&gt;USERNAME / PASSWORD / TLS&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="200" x="1220" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="combos" parent="1" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=10;spacingRight=10;fontSize=11;" value="&lt;b&gt;Supported build combinations (2 build-tag axes: relational store + telemetry store)&lt;/b&gt;&lt;br&gt;&lt;br&gt;1. &lt;b&gt;no tags&lt;/b&gt;: SQLite + SQLite (zero-config self-hosted default)&lt;br&gt;2. &lt;b&gt;-tags telemetry_duckdb&lt;/b&gt;: SQLite main + DuckDB telemetry (columnar reads, Dockerfile.duckdb, Debian image)&lt;br&gt;3. &lt;b&gt;-tags &amp;quot;transactional_pg telemetry_ch&amp;quot;&lt;/b&gt;: PostgreSQL + ClickHouse (cloud / high volume)&lt;br&gt;&lt;br&gt;&lt;i&gt;Any other combination fails to compile: guard files in backend/app/db/ (guard_pg_without_ch.go, guard_ch_without_pg.go, guard_ch_and_duckdb.go, guard_stale_*.go)&lt;/i&gt;" vertex="1">
+          <mxGeometry height="190" width="600" x="80" y="710" as="geometry" />
+        </mxCell>
+        <mxCell id="tree" parent="1" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=12;spacingRight=8;fontSize=11;fontFamily=Courier New;" value="&lt;b&gt;Folder structure: backend/app/&lt;/b&gt;&lt;br&gt;&lt;br&gt;db/ &amp;nbsp;.................. connections + build-tag guard files&lt;br&gt;migrations/&lt;br&gt;&amp;nbsp;&amp;nbsp;pg/ (transactional_pg) &amp;nbsp;&amp;nbsp;ch/ (telemetry_ch)&lt;br&gt;&amp;nbsp;&amp;nbsp;sqlite/ + sqlite_telemetry/ (default)&lt;br&gt;&amp;nbsp;&amp;nbsp;duckdb_telemetry/ (telemetry_duckdb)&lt;br&gt;repositories/&lt;br&gt;&amp;nbsp;&amp;nbsp;transactional/ ..... facade: transactional_{sqlite,pg}.go&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;pg/ &amp;nbsp;sqlite/ &amp;nbsp;shared/&lt;br&gt;&amp;nbsp;&amp;nbsp;telemetry/ ......... facade: telemetry_{sqlite,duckdb,ch}.go&lt;br&gt;&amp;nbsp;&amp;nbsp;&amp;nbsp;&amp;nbsp;clickhouse/ &amp;nbsp;duckdb/ &amp;nbsp;sqlite/ &amp;nbsp;shared/ &amp;nbsp;sqlitetypes/" vertex="1">
+          <mxGeometry height="230" width="680" x="740" y="710" as="geometry" />
+        </mxCell>
+        <mxCell id="ec1" edge="1" parent="1" source="consumers" target="lfac" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.25;exitY=1;exitDx=0;exitDy=0;entryX=0.15;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ec1l" connectable="0" parent="ec1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="transactions (*sql.Tx)" vertex="1">
+          <mxGeometry relative="1" x="0" y="0" as="geometry">
+            <mxPoint x="-75" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ec2" edge="1" parent="1" source="consumers" target="rfac" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.75;exitY=1;exitDx=0;exitDy=0;entryX=0.85;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ec2l" connectable="0" parent="ec2" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="batch InsertAsync + reads" vertex="1">
+          <mxGeometry relative="1" x="0" y="0" as="geometry">
+            <mxPoint x="85" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ee1" edge="1" parent="1" source="limp1" target="engsm" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ee2" edge="1" parent="1" source="limp2" target="engpg" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ee3" edge="1" parent="1" source="rimp1" target="engst" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="ee4" edge="1" parent="1" source="rimp2" target="engdd" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.4;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="947" y="520" />
+              <mxPoint x="1065" y="520" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="ee5" edge="1" parent="1" source="rimp3" target="engch" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1080" y="535" />
+              <mxPoint x="1320" y="535" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

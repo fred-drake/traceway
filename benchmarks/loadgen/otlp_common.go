@@ -67,6 +67,7 @@ func sendOneOTLP(
 	stats *latencyTracker,
 	attemptedItems *atomic.Int64,
 	rejectedItems *atomic.Int64,
+	okItems *atomic.Int64,
 ) {
 	body, err := sender.BuildBody(rng, batchSize)
 	if err != nil {
@@ -104,8 +105,10 @@ func sendOneOTLP(
 		return
 	}
 
-	if rej := sender.ParseRejected(respBody); rej > 0 {
+	rej := sender.ParseRejected(respBody)
+	if rej > 0 {
 		rejectedItems.Add(int64(rej))
 	}
+	okItems.Add(int64(batchSize) - int64(rej))
 	stats.Record(elapsed.Seconds()*1000, nil)
 }

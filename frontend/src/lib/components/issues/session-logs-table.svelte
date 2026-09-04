@@ -42,7 +42,7 @@
 			case 'error':
 				return 'text-destructive';
 			case 'warn':
-				return 'text-yellow-600 dark:text-yellow-500';
+				return 'text-yellow-600 dark:text-yellow-400';
 			case 'debug':
 				return 'text-muted-foreground';
 			default:
@@ -75,10 +75,10 @@
 	});
 </script>
 
-<div bind:this={scrollEl} class="rounded-md border max-h-[440px] overflow-y-auto">
+<div bind:this={scrollEl} class="max-h-[440px] overflow-y-auto rounded-md border">
 	<Table.Root>
 		{#if logs.length > 0}
-			<Table.Header class="sticky top-0 bg-background z-10">
+			<Table.Header class="sticky top-0 z-10 bg-background">
 				<Table.Row>
 					<TracewayTableHeader
 						label="Time"
@@ -98,11 +98,11 @@
 			{#if logs.length === 0}
 				<TableEmptyState colspan={3} message="No logs captured for this session." />
 			{:else}
-				{#each logs as entry, i}
+				{#each logs as entry, i (i)}
 					<Table.Row
 						onclick={() => onSeek?.(offsetMs(entry.timestamp))}
-						class="cursor-pointer hover:bg-muted/50 {i === activeIndex
-							? 'bg-primary/10 border-l-2 border-l-primary'
+						class="cursor-pointer {i === activeIndex
+							? 'border-l-2 border-l-primary bg-primary/10'
 							: ''}"
 					>
 						<Table.Cell class="font-mono text-xs text-muted-foreground tabular-nums">
@@ -112,7 +112,7 @@
 							{entry.level}
 						</Table.Cell>
 						<Table.Cell
-							class="font-mono text-xs whitespace-pre-wrap break-all"
+							class="font-mono text-xs break-all whitespace-pre-wrap"
 							title={entry.message}
 						>
 							{entry.message}

@@ -6,14 +6,13 @@ import { SectionHead } from "@/components/section-head";
 import { FaqList } from "@/components/faq-list";
 import { FinalCTA } from "@/components/final-cta";
 import { AuroraBackground } from "@/components/aurora-background";
-import { PricingCalculator } from "@/components/pricing-calculator";
-import { CostComparison } from "@/components/cost-comparison";
+import { ComplianceStrip } from "@/components/compliance-strip";
 import { getCalendlyUrl } from "@/lib/calendly";
 
 export default function CloudPage() {
   return (
     <main className="relative">
-      <section className="hero hero-product gridbg relative">
+      <section className="hero hero-product relative">
         <AuroraBackground variant="hero" />
         <div className="wrap relative z-10">
           <Chip>
@@ -25,55 +24,64 @@ export default function CloudPage() {
           </h1>
           <p className="hero-sub">
             Focus on shipping features, not managing infrastructure. All the
-            power of Traceway with zero maintenance — same open-source code,
+            power of Traceway with zero maintenance. Same open-source code,
             managed by us.
           </p>
           <div className="hero-cta-row">
-            <Link href="https://cloud.tracewayapp.com/register" className="btn btn-accent">
+            <Link
+              href="https://cloud.tracewayapp.com/register"
+              className="btn btn-accent"
+            >
               Start Free <ArrowRight className="h-4 w-4" />
-            </Link>
-            <Link href="https://docs.tracewayapp.com/cloud" className="btn btn-ghost">
-              How it works
             </Link>
           </div>
         </div>
       </section>
 
       {/* Pricing */}
-      <section className="wrap py-20">
-        <SectionHead
-          eyebrow="Pricing"
-          title="Simple, predictable pricing"
-          description="Start free and scale as you grow. No credit card required for the Starter plan."
-        />
-        <div className="mt-8">
-          <PricingCalculator />
-        </div>
-      </section>
+      {/* WHITE BAND: pricing + compliance render on white */}
+      <div className="band-light">
+        <section className="wrap md:py-20! py-10!">
+          <SectionHead
+            align="center"
+            eyebrow="Pricing"
+            title={
+              <>
+                Pricing that fits <em>your team.</em>
+              </>
+            }
+            description="We price Traceway Cloud per customer, sized to your actual volume and needs. Start free, and when you're ready, we'll put together a plan with no per-host or per-seat fees."
+          />
+          <div className="mt-2 flex flex-wrap justify-center gap-3">
+            <Link href={getCalendlyUrl()} className="btn btn-accent">
+              Talk to us about pricing <ArrowRight className="h-4 w-4" />
+            </Link>
+            <Link
+              href="https://cloud.tracewayapp.com/register"
+              className="btn btn-ghost"
+            >
+              Start Free
+            </Link>
+          </div>
+        </section>
 
-      {/* Cost comparison / cost advantage — absorbed from home */}
-      <section className="wrap py-10" id="cost-mount" data-cost-mount>
-        <SectionHead
-          eyebrow="Cost"
-          title={
-            <>
-              Designed for efficiency. <em>Built to lower your cloud bill.</em>
-            </>
-          }
-          description="Traceway runs lean. ClickHouse columnar storage compresses 1 million daily events into ~2-3 GB per month. Postgres is used for efficient user and organization storage."
-        />
-        <div className="mt-8">
-          <CostComparison />
-        </div>
-        <div className="mt-10 flex flex-col sm:flex-row items-center justify-center gap-3">
-          <Link href="https://cloud.tracewayapp.com/register" className="btn btn-accent">
-            Start on Cloud <ArrowRight className="h-4 w-4" />
-          </Link>
-          <Link href="https://docs.tracewayapp.com" className="btn btn-ghost">
-            Self-host for free
-          </Link>
-        </div>
-      </section>
+        {/* Security & compliance */}
+        <section className="wrap pb-20">
+          <SectionHead
+            align="center"
+            eyebrow="Security & compliance"
+            title={
+              <>
+                Built to <em>enterprise standards.</em>
+              </>
+            }
+            description="Independent third-party audits are underway. SOC 2 Type II and ISO 27001 reports will be available on completion; reach out for current status under NDA."
+          />
+          <div className="mx-auto mt-2 max-w-2xl">
+            <ComplianceStrip />
+          </div>
+        </section>
+      </div>
 
       <FinalCTA
         title={
@@ -92,36 +100,35 @@ export default function CloudPage() {
         }}
       />
 
-      {/* FAQ — includes absorbed from home */}
+      {/* FAQ, includes absorbed from home */}
       <section className="wrap pt-10 pb-24">
         <div className="max-w-3xl mx-auto">
-          <SectionHead align="center" eyebrow="FAQ" title="Cloud & pricing FAQ" />
+          <SectionHead align="center" eyebrow="FAQ" title="Cloud FAQ" />
           <div className="mt-4">
             <FaqList
               items={[
                 {
-                  q: "How does Traceway compare to Datadog / New Relic?",
+                  q: "How does pricing work?",
+                  a: "We price per customer. Every plan starts from two simple meters, a monthly allowance for exceptions and one for ingested data (logs, traces, spans, metrics, session replay), and we size both to your workload. Book a call, tell us your volume, and we'll put together a plan. HTTP requests and background task runs are never metered, and there are no per-host or per-seat fees.",
+                },
+                {
+                  q: "Why is Traceway so cost-effective?",
                   a: (
                     <>
                       <p>
-                        Datadog and New Relic charge per host, per event, or per
-                        GB ingested, and bills can spike unpredictably as
-                        traffic grows. Traceway Cloud has fixed-price tiers —
-                        at the Enterprise level, 200 million monthly events
-                        cost $499.99 ($0.0000025 per event) with no overage
-                        charges. Self-hosted Traceway has zero licensing cost.
+                        There are no per-host or per-seat fees layered on top of
+                        your plan, and self-hosted Traceway has zero licensing
+                        cost.
                       </p>
                       <p>
                         Architecturally, Traceway uses ClickHouse columnar
-                        storage that compresses 1 million daily events into
-                        ~2-3 GB per month, keeping infrastructure costs low even
-                        at high volume. Feature-wise, Traceway includes
-                        endpoint performance analytics, exception tracking with
-                        automatic grouping and ranking, session replay,
-                        distributed tracing, metrics, logs, and AI
-                        observability — all in one tool. Datadog and New Relic
-                        split these across separate products, each with its
-                        own billing meter.
+                        storage that compresses 1 million daily events into ~2-3
+                        GB per month, keeping costs low even at high volume.
+                        Everything is in one tool: endpoint performance
+                        analytics, exception tracking with automatic grouping
+                        and ranking, session replay, distributed tracing,
+                        metrics, logs, and AI observability, with a single bill
+                        instead of a separate meter per product.
                       </p>
                     </>
                   ),
@@ -142,23 +149,11 @@ export default function CloudPage() {
                 },
                 {
                   q: "Will my bill ever increase unexpectedly?",
-                  a: "No. Every Traceway Cloud plan has a fixed monthly price with no overage charges. If you approach your included volume, we notify you in advance so you can decide whether to upgrade. Your bill will never increase without your explicit approval. This applies to every tier, from Starter to Enterprise.",
+                  a: "No. Your pricing is agreed with you up front. If your usage approaches what we agreed, we reach out in advance so you can decide how to proceed. There are no per-host or per-seat surprises, and we never apply a new rate without telling you first.",
                 },
                 {
                   q: "What support do Cloud customers get?",
-                  a: "All Cloud customers on a paid plan can open GitHub issues that are triaged with highest priority by our engineering team. You talk directly to the people who build Traceway — no help desk routing. Enterprise+ customers also receive a shared Slack channel with direct access to the team. Self-hosted users are welcome to open GitHub issues and participate in community discussions — we actively monitor and respond.",
-                },
-                {
-                  q: "Are there overage charges?",
-                  a: "No. Every plan has a fixed monthly price. If you approach your included volume, we notify you in advance so you can decide whether to upgrade. What you see on the pricing table is what you pay — no metered billing, no surprise line items, no usage-based surcharges.",
-                },
-                {
-                  q: "How does Traceway Cloud compare on cost at scale?",
-                  a: "At the Enterprise tier, 200 million monthly events cost $499.99 — that is $0.0000025 per event. Competitors like Datadog and Sentry charge orders of magnitude more at the same volume, often with additional per-host, per-seat, or overage fees on top. Enterprise+ offers even cheaper per-event pricing with a dedicated SRE and shared Slack channel.",
-                },
-                {
-                  q: "What counts as an event?",
-                  a: "An event is any single issue (exception), HTTP request, or background task run that Traceway ingests. Session replays, distributed trace spans, custom metrics, and logs are included at no additional cost and do not count toward your event volume. For example, if your application handles 50,000 HTTP requests and encounters 200 exceptions in a month, that is 50,200 events.",
+                  a: "All Cloud customers on a paid plan can open GitHub issues that are triaged with highest priority by our engineering team. You talk directly to the people who build Traceway, with no help desk routing. Larger plans also include a shared Slack channel with direct access to the team. Self-hosted users are welcome to open GitHub issues and participate in community discussions. We actively monitor and respond.",
                 },
                 {
                   q: "Can I migrate from Cloud to Self-Hosted later?",

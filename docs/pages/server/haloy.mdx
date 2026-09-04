@@ -163,7 +163,12 @@ Point your SDK's connection string at your Traceway domain:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `APP_BASE_URL` | `https://traceway.yourdomain.com` | Public URL of the Traceway instance |
+| `APP_BASE_URL` | `https://traceway.yourdomain.com` | Public URL of the Traceway instance. Also what the deep links in notifications are built from, and the CLI/MCP OAuth issuer and device-login verification URL. See [CLI Authentication](/learn/cli-auth). |
+| `TRUSTED_PROXIES` | *(loopback)* | Comma-separated CIDRs of the proxies in front of Traceway whose `X-Forwarded-For` / `X-Real-IP` is trusted for the real client IP. Every per-IP rate limit keys on it, and `/api/report` stores it as each session's `client.ip`. Unset trusts loopback only, so a proxy container on a Docker network or an in-cluster ingress has to be listed before its header counts. A value replaces the default, so list every hop between the client and this server, not just the outermost one: naming only a CDN leaves a private ingress untrusted and turns `X-Forwarded-For` off entirely. `*` trusts every peer and lets clients spoof their address. Until the proxy is listed, every visitor shares one rate-limit bucket keyed on the proxy, and the server logs a warning the first time it sees a forwarding header from a peer it does not trust. Haloy fronts the app with its own proxy, so list the range that proxy connects from (and your CDN's, if any). |
+| `TRUSTED_PROXY_HEADER` | *(none)* | A header taken as the client IP on every request, ahead of `TRUSTED_PROXIES`: `X-Real-IP` behind ingress-nginx, `CF-Connecting-IP` behind Cloudflare. Only safe when every request provably passes through a proxy that overwrites the header; a directly reachable backend lets clients set it freely. |
+| `REPORT_MAX_BODY_MB` | `64` | Cap on the decompressed `/api/report` and `/api/profiles/ingest` body in megabytes. Gzip does not raise it. A body over the cap answers `413`. |
+| `INGEST_MAX_CONCURRENT` | *(2 x CPU cores, min 4)* | Telemetry ingest requests processed at once (`/api/report`, `/api/profiles/ingest`, `/api/otel/*`). Excess requests wait up to `INGEST_ADMISSION_WAIT_SECONDS` (default 5) and then get `503` with `Retry-After`; past a bounded waiting room (four times the capacity, at least 16) they are turned away immediately. Each admitted request can hold a decoded body, so on a memory-capped container size this from the memory limit rather than the CPU count. |
+| `UPLOAD_MAX_CONCURRENT` | `4` | Source map and symbol uploads processed at once. Each holds a whole file in memory while it is parsed. Excess uploads wait 30 seconds and then get `503`. Separate from the ingest pool so a CI burst cannot starve telemetry. |
 | `CLICKHOUSE_SERVER` | `clickhouse:9000` | ClickHouse host:port |
 | `CLICKHOUSE_DATABASE` | `traceway` | ClickHouse database name |
 | `CLICKHOUSE_USERNAME` | `default` | ClickHouse username |
@@ -175,12 +180,14 @@ Point your SDK's connection string at your Traceway domain:
 | `POSTGRES_USERNAME` | `traceway` | PostgreSQL username |
 | `POSTGRES_PASSWORD` | *(from env)* | PostgreSQL password |
 | `POSTGRES_SSLMODE` | `disable` | PostgreSQL SSL mode |
-| `JWT_SECRET` | *(from env)* | JWT signing secret (min 32 chars) |
+| `JWT_SECRET` | *(from env)* | Signs all authentication tokens (dashboard sessions and CLI/MCP device logins). Use a strong, unique secret of at least 32 chars; keep it stable. See [CLI Authentication](/learn/cli-auth#set-a-strong-jwt_secret). |
 | `GOOGLE_CLIENT_ID` | *(unset)* | Optional. Google OAuth client ID. Setting both Google variables enables the **Continue with Google** button. See the [SSO guide](/learn/sso). |
 | `GOOGLE_CLIENT_SECRET` | *(unset)* | Optional. Google OAuth client secret. |
 | `GITHUB_CLIENT_ID` | *(unset)* | Optional. GitHub OAuth App client ID. Setting both GitHub variables enables the **Continue with GitHub** button. |
 | `GITHUB_CLIENT_SECRET` | *(unset)* | Optional. GitHub OAuth App client secret. |
 | `OAUTH_SESSION_SECRET` | *(falls back to `JWT_SECRET`)* | Optional. Cookie signing secret for the OAuth round-trip. |
+| `STORAGE_TYPE` | `local` | Blob storage backend for source maps, session recordings, and AI traces: `local` or `s3`. See [Blob Storage](/server/storage) for the S3 variables and persistence notes. |
+| `STORAGE_PATH` | `./storage` | Folder for local blob storage. Point it at a persistent mount, or use `STORAGE_TYPE=s3`. Ignored when `STORAGE_TYPE=s3`. |
 | `SESSION_RECORDING_RETENTION_DAYS` | `30` | Optional. Days to keep on-disk session recordings under `STORAGE_PATH/recordings/`. Worker runs hourly and on startup. `0` disables; no effect when `STORAGE_TYPE=s3`. |
 
 When configuring providers, set the callback URL on the provider side to `https://traceway.yourdomain.com/api/auth/callback/{google|github}`.

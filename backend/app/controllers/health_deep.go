@@ -1,9 +1,14 @@
 package controllers
 
 import (
+	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tracewayapp/traceway/backend/app/db"
+	"github.com/tracewayapp/traceway/backend/app/outbox"
+	"github.com/tracewayapp/traceway/backend/app/synthetics"
+	traceway "go.tracewayapp.com"
 )
 
 type healthDeepController struct{}
@@ -29,11 +34,45 @@ type HealthDeepResponse struct {
 	ErrorsRecent     []CHError    `json:"errorsRecent,omitempty"`
 	MemoryUsageBytes int64        `json:"memoryUsageBytes,omitempty"`
 	MemoryTotalBytes int64        `json:"memoryTotalBytes,omitempty"`
+
+	TelemetryBackend string                   `json:"telemetryBackend"`
+	DroppedRows      map[string]uint64        `json:"droppedRows"`
+	DroppedRowsTotal uint64                   `json:"droppedRowsTotal"`
+	InsertFailures   uint64                   `json:"insertFailures"`
+	IngestRejected   uint64                   `json:"ingestRejected"`
+	Engine           *db.TelemetryEngineStats `json:"engine,omitempty"`
+	Outbox           *outbox.HealthStats      `json:"outbox,omitempty"`
+	Synthetics       *synthetics.HealthStats  `json:"synthetics,omitempty"`
 }
 
+// 503 means the configured telemetry backend is down. On the embedded
+// backends chReachable stays false with a 200, which is what the loadgen's
+// merge-idle fast path keys on.
 func (h healthDeepController) Get(c *gin.Context) {
 	resp := fetchCHHealth(c.Request.Context())
-	if !resp.CHReachable {
+
+	dropped, droppedTotal, insertFailures := db.GetTelemetryIngestCounters()
+	resp.TelemetryBackend = db.TelemetryBackendName()
+	resp.DroppedRows = dropped
+	resp.DroppedRowsTotal = droppedTotal
+	resp.InsertFailures = insertFailures
+	resp.IngestRejected = db.GetIngestRejects()
+	if engine, ok := db.GetTelemetryEngineStats(c.Request.Context()); ok {
+		resp.Engine = &engine
+	}
+	// Best-effort: health must not 500 because the main DB hiccuped.
+	if outboxStats, err := outbox.HealthSnapshot(); err == nil {
+		resp.Outbox = outboxStats
+	} else {
+		traceway.CaptureException(fmt.Errorf("failed to load outbox health: %w", err))
+	}
+	if syntheticsStats, err := synthetics.HealthSnapshot(); err == nil {
+		resp.Synthetics = syntheticsStats
+	} else {
+		traceway.CaptureException(fmt.Errorf("failed to load synthetics health: %w", err))
+	}
+
+	if resp.TelemetryBackend == "clickhouse" && !resp.CHReachable {
 		c.JSON(http.StatusServiceUnavailable, resp)
 		return
 	}

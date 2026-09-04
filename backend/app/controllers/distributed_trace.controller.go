@@ -4,11 +4,13 @@ import (
 	"context"
 	"database/sql"
 	"net/http"
+	"time"
 
 	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -16,6 +18,10 @@ import (
 )
 
 type distributedTraceController struct{}
+
+type distributedTraceRequest struct {
+	RecordedAt *time.Time `json:"recordedAt"`
+}
 
 type DistributedTraceNode struct {
 	ProjectId   uuid.UUID              `json:"projectId"`
@@ -41,10 +47,13 @@ func (d distributedTraceController) GetDistributedTrace(c *gin.Context) {
 		return
 	}
 
+	var request distributedTraceRequest
+	_ = c.ShouldBindJSON(&request)
+
 	userId := middleware.GetUserId(c)
 
 	projects, err := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.Project, error) {
-		return repositories.ProjectRepository.FindByUserId(tx, userId)
+		return transactional.ProjectRepository.FindByUserId(tx, userId)
 	})
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to load user projects: %w", err))
@@ -68,25 +77,25 @@ func (d distributedTraceController) GetDistributedTrace(c *gin.Context) {
 
 	ctx := context.Background()
 
-	endpoints, err := repositories.EndpointRepository.FindByDistributedTraceId(ctx, distributedTraceId, projectIds)
+	endpoints, err := telemetry.EndpointRepository.FindByDistributedTraceId(ctx, distributedTraceId, projectIds, request.RecordedAt)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to query endpoints: %w", err))
 		return
 	}
 
-	tasks, err := repositories.TaskRepository.FindByDistributedTraceId(ctx, distributedTraceId, projectIds)
+	tasks, err := telemetry.TaskRepository.FindByDistributedTraceId(ctx, distributedTraceId, projectIds, request.RecordedAt)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to query tasks: %w", err))
 		return
 	}
 
-	aiTraces, err := repositories.AiTraceRepository.FindByDistributedTraceId(ctx, distributedTraceId, projectIds)
+	aiTraces, err := telemetry.AiTraceRepository.FindByDistributedTraceId(ctx, distributedTraceId, projectIds, request.RecordedAt)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to query ai traces: %w", err))
 		return
 	}
 
-	exceptions, err := repositories.ExceptionStackTraceRepository.FindByDistributedTraceId(ctx, distributedTraceId, projectIds)
+	exceptions, err := telemetry.ExceptionStackTraceRepository.FindByDistributedTraceId(ctx, distributedTraceId, projectIds, request.RecordedAt)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to query exceptions: %w", err))
 		return

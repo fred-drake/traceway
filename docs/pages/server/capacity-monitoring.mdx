@@ -1,0 +1,189 @@
+# Capacity & Self-Monitoring
+
+Traceway's backend can monitor itself. When enabled, the server continuously reports ingestion pressure, ClickHouse health, cache sizes, and process resource usage into a regular Traceway project, so you can dashboard them, and more importantly, alert on them before you hit a wall.
+
+This page lists every self-monitoring metric, recommended alert thresholds, and a decision tree for the three scaling questions that matter in production: **do I scale ClickHouse, do I scale the backend server, or do I put Kafka in front of ingestion?**
+
+## Enabling self-monitoring
+
+1. Create a project in your Traceway dashboard (a dedicated "monitoring" project keeps things tidy). For larger setups, point self-monitoring at a *separate* Traceway instance so an outage doesn't take down its own monitoring.
+2. Copy the project token and set:
+
+```bash
+MONITORING_TRACEWAY_URL="<project_token>@https://your-traceway-host/api/report"
+```
+
+That single variable turns everything on:
+
+- Every HTTP request to the backend is captured as a transaction (so endpoint latency/error-rate alert rules work on `POST /api/report` out of the box).
+- Runtime metrics are reported every 30s: `cpu.used_pcnt`, `mem.used`, `mem.total`, `go.go_routines`, `go.heap_objects`, `go.num_gc`, `go.gc_pause`.
+- The backend reporters described below start emitting `traceway.*` metrics.
+
+Note: `mem.used` is Go **heap** memory only. The real OOM-relevant number is `traceway.proc.rss_mb` (resident set size, Linux only).
+
+## Metric reference
+
+### Ingestion (every batch)
+
+Emitted once per `/api/report` and OTLP request, tagged with `signal` and `table`:
+
+| Metric | Meaning |
+|--------|---------|
+| `traceway.ingest.batch.convert_ms` | Time converting the client payload into rows (backend CPU work) |
+| `traceway.ingest.batch.insert_ms` | Time writing the batch into ClickHouse (inside the request, so clients wait on this) |
+| `traceway.ingest.batch.size` | Rows in the batch |
+| `traceway.ingest.batch.bytes` | Decompressed payload size in bytes |
+| `traceway.ingest.rate_limited` | Fired when an org hits its ingest quota (tagged `org_id`) |
+
+### Backend process (every 30s)
+
+| Metric | Meaning |
+|--------|---------|
+| `traceway.ingest.in_flight` | Ingest requests currently being processed |
+| `traceway.proc.rss_mb` | Process resident memory in MB (Linux only) |
+| `traceway.cache.projects.entries` | Projects held in the in-memory token cache |
+| `traceway.cache.metric_registry.entries` | Known metric names cached in memory |
+
+### ClickHouse health (every 60s, ClickHouse deployments only)
+
+Not emitted in SQLite mode.
+
+| Metric | Meaning |
+|--------|---------|
+| `traceway.ch.pool.open` / `traceway.ch.pool.idle` | Connection pool usage (max is 15) |
+| `traceway.ch.parts.active` / `traceway.ch.parts.rows` | Active parts and rows per telemetry table (tagged `table`) |
+| `traceway.ch.parts.max_per_partition` | Largest part count in any single partition, per table (tagged `table`). ClickHouse delays inserts at 1000 parts/partition and rejects them at 3000 |
+| `traceway.ch.merges.running` | Background merges currently running |
+| `traceway.ch.inserted_rows.delta` | Rows inserted since the last tick |
+| `traceway.ch.failed_inserts.delta` | Failed insert queries since the last tick |
+| `traceway.ch.delayed_inserts.delta` | Inserts ClickHouse throttled since the last tick (parts back-pressure) |
+| `traceway.ch.rejected_inserts.delta` | Inserts ClickHouse rejected since the last tick (`parts_to_throw` hit) |
+| `traceway.ch.disk.free_bytes` / `total_bytes` / `used_pcnt` | Disk usage per ClickHouse disk (tagged `disk`) |
+| `traceway.ch.memory.tracking_bytes` | Memory the ClickHouse server is currently tracking |
+| `traceway.ch.memory.os_available_bytes` | Available OS memory on the ClickHouse host |
+
+### Session recording uploader (every 10s)
+
+| Metric | Meaning |
+|--------|---------|
+| `traceway.recordings.queue_depth` | Segments waiting in the upload queue (cap default 2048) |
+| `traceway.recordings.in_flight` | Workers mid-upload |
+| `traceway.recordings.uploaded.delta` | Segments uploaded since the last tick |
+| `traceway.recordings.dropped.delta` | Segments dropped (queue full) since the last tick, meaning data loss |
+| `traceway.recordings.failed.delta` | Upload/insert failures since the last tick |
+
+### Source map cache (every 30s)
+
+| Metric | Meaning |
+|--------|---------|
+| `traceway.sourcemap.entries` / `traceway.sourcemap.bytes` | Built source map resolvers held in memory and their estimated total size |
+| `traceway.sourcemap.negative_entries` | Filenames currently under a miss/failure cooldown (no map uploaded, or recent load failures) |
+| `traceway.sourcemap.hits.delta` / `misses.delta` / `evictions.delta` | Cache traffic since the last tick |
+| `traceway.sourcemap.load_failures.delta` | Failed resolver builds (storage error, 5s timeout, unparseable map) since the last tick; affected traces are stored unsymbolicated |
+| `traceway.sourcemap.not_found.delta` | Lookups since the last tick where no map was uploaded for the frame's filename; sustained nonzero for a project that should symbolicate usually means a missing CI upload step |
+| `traceway.sourcemap.negative_hits.delta` | Frame lookups skipped by an active cooldown since the last tick; high values are normal for JS projects that do not upload maps |
+| `traceway.sourcemap.parse_ms` | Duration of the most recent resolver build |
+| `traceway.sourcemap.store_hits.delta` / `builds.delta` | Memory misses served by a precompiled `.tw` from object storage vs. full rebuilds from `.map` + bundle; reported in both cache modes, since the `.tw` store tier is always active |
+| `traceway.sourcemap.disk.entries` / `disk.bytes` | Local `.tw` files cached on disk and their total size (only reported when `SOURCEMAP_CACHE_TYPE=disk`) |
+| `traceway.sourcemap.disk.hits.delta` / `disk.evictions.delta` | Memory misses served by a local `.tw` file, and local files evicted by the byte cap, since the last tick |
+
+## Source map cache sizing
+
+Symbolication resolves stack frames against object storage at `sourcemaps/{projectId}/{filename}`, with one in-memory LRU of built resolvers in front of it. A resolver keeps only a flat token table plus interned file and function names; the raw `.map` and bundle bytes are held only while building. Concurrent requests for the same map share one storage read and one build, so a given map exists in memory at most once. The cache cap is on the estimated in-memory size, not the raw file size.
+
+Lookups that find no map (or fail to load one) are negative-cached per filename with an escalating cooldown: a missing map starts at 1 minute, a transient failure at 15 seconds, and each consecutive failure doubles the cooldown up to a 15 minute cap. Uploading a file clears its cooldown and evicts any cached resolver on the instance that handled the upload; in multi-instance deployments the other instances retry within their remaining cooldown. This keeps JS projects that never upload maps from generating a steady stream of storage reads, and keeps a storage outage from adding read-timeout latency to every exception report.
+
+Upgrading from 1.7? The flat storage layout is new in 1.8 and existing maps are migrated automatically at startup; see [Upgrading to 1.8](/server/upgrade-1-8).
+
+In both modes, a memory miss first tries a precompiled `.tw` resolver from object storage before re-parsing the map and bundle, and rebuilds happen once cluster-wide because the resulting `.tw` is written back to storage. Optionally, `SOURCEMAP_CACHE_TYPE=disk` adds a local disk tier of those `.tw` files between the memory cache and object storage, so a miss becomes a local mmap open instead of a storage download. See [the `.tw` format](/symbolicator#the-tw-resolver-format) and [cache tiers](/symbolicator#cache-tiers) for the mechanics.
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SOURCEMAP_CACHE_MAX_ENTRIES` | `200` | Max built resolvers kept in memory |
+| `SOURCEMAP_CACHE_MAX_BYTES_MB` | `500` | Max estimated in-memory size of all resolvers |
+| `SOURCEMAP_CACHE_TYPE` | `memory` | `disk` adds the local `.tw` tier |
+| `SOURCEMAP_DISK_CACHE_PATH` | `./twcache` | Directory for local `.tw` files (disk mode only) |
+| `SOURCEMAP_DISK_CACHE_MAX_MB` | `2048` | Byte cap for the local `.tw` directory, LRU-evicted (disk mode only) |
+| `SYMBOLICATOR_PARSER` | `goja` | Bundle parser for function name resolution; `oxc` is faster on large bundles but requires a `-tags oxc` build (see [Bundle parsers](/symbolicator/javascript#bundle-parsers)) |
+
+Sizing guidance:
+
+- **Small box (1-2 GB RAM):** `SOURCEMAP_CACHE_MAX_BYTES_MB=100`.
+- **Plenty of RAM, many active source maps:** raise `SOURCEMAP_CACHE_MAX_BYTES_MB` until `traceway.sourcemap.misses.delta` stays near zero in steady state; every miss is a storage read plus a rebuild, which burns CPU and briefly doubles that map's memory footprint.
+- **More active maps than the memory cap can hold, or multiple backend instances:** enable the disk tier. Watch `traceway.sourcemap.builds.delta` (full rebuilds) shrink toward zero while `disk.hits.delta` and `store_hits.delta` absorb the misses; give `SOURCEMAP_DISK_CACHE_MAX_MB` enough room that `disk.evictions.delta` stays near zero.
+- Watch `traceway.proc.rss_mb` against your host RAM; if it climbs during exception ingest with stack traces, the source map cache is the usual suspect. With the disk tier, `.tw` token tables are memory-mapped and show up as page cache rather than process heap.
+
+## Alerting on these metrics
+
+Create rules in the monitoring project under **Notifications** using the **Metric threshold** rule type. A rule is defined by: metric name, aggregation (`avg`, `max`, `min`, `sum`, `p95`, `p99`), operator (`gt`, `gte`, `lt`, `lte`, `eq`), threshold value, and lookback window in minutes. Rules are evaluated every 60 seconds.
+
+**Tag caveat:** metric threshold rules aggregate across *all* tag combinations of a metric name. That is what you want for the metrics on this page: `max` on `traceway.ch.parts.max_per_partition` gives you the worst partition across every table, and `max` on `traceway.ch.disk.used_pcnt` gives you the fullest disk. Just avoid `avg` on per-table/per-disk metrics, where mixing series would dilute the signal.
+
+Two more rule types complete the picture:
+
+- **Endpoint P95 threshold** on `POST /api/report`: client-visible ingest latency (the backend's own HTTP requests are transactions in the monitoring project).
+- **No data** with data type `metrics`, which fires when the backend stops self-reporting entirely (crash, network partition).
+
+## Recommended starting alerts
+
+| Metric | Agg | Op | Threshold | Lookback | Urgency | Meaning |
+|--------|-----|----|-----------|----------|---------|---------|
+| `traceway.ch.failed_inserts.delta` | max | gt | 0 | 5 | critical | Inserts are failing right now |
+| `traceway.ch.rejected_inserts.delta` | max | gt | 0 | 5 | critical | ClickHouse is rejecting inserts (3000 parts/partition hit) |
+| `traceway.ch.inserted_rows.delta` | max | lte | 0 | 10 | critical | Ingestion stalled: nothing written for 10 minutes |
+| `traceway.ch.disk.used_pcnt` | max | gt | 90 | 5 | critical | ClickHouse disk nearly full |
+| `traceway.ch.parts.max_per_partition` | max | gt | 2000 | 5 | critical | Approaching the insert-rejection threshold |
+| `traceway.ingest.batch.insert_ms` | p95 | gt | 500 | 10 | warning | ClickHouse write latency rising; clients feel this directly |
+| `traceway.ch.delayed_inserts.delta` | max | gt | 0 | 10 | warning | ClickHouse is throttling inserts (merge back-pressure) |
+| `traceway.ch.parts.max_per_partition` | max | gt | 700 | 10 | warning | Approaching the insert-delay threshold (1000) |
+| `traceway.ch.disk.used_pcnt` | max | gt | 80 | 15 | warning | ClickHouse disk filling up |
+| `traceway.ch.pool.open` | avg | gte | 15 | 10 | warning | Connection pool saturated; check `insert_ms` next |
+| `traceway.recordings.dropped.delta` | max | gt | 0 | 5 | warning | Recording segments being dropped (ingestion overload) |
+| `traceway.sourcemap.load_failures.delta` | max | gt | 0 | 10 | warning | Source map loads failing (storage errors/timeouts); traces stored unsymbolicated |
+| `cpu.used_pcnt` | avg | gt | 80 | 10 | warning | Backend CPU-bound |
+| `traceway.proc.rss_mb` | avg | gt | 80% of host RAM | 10 | warning | Memory pressure / OOM risk (e.g. 800 on a 1 GB box) |
+| `traceway.sourcemap.bytes` | avg | gt | ~half of `SOURCEMAP_CACHE_MAX_BYTES_MB`×1MB | 30 | info | Source map cache growing, revisit sizing |
+
+Plus the two non-metric rules: **Endpoint P95 threshold** on `POST /api/report` (e.g. 1000 ms over 10 minutes) and **No data** on `metrics` with 10 minutes of silence.
+
+## Scale ClickHouse, scale the backend, or add Kafka?
+
+Ingestion in Traceway is synchronous: each `/api/report` request converts the payload and writes it to ClickHouse before responding. That makes the diagnosis straightforward: the metrics tell you which side of that pipeline is saturated, and whether the problem is sustained or bursty.
+
+### Scale ClickHouse when the pressure is sustained and CH-side
+
+ClickHouse can't merge or store as fast as you're writing. Signals, in rough order of severity:
+
+- `traceway.ch.parts.max_per_partition` climbing steadily, `traceway.ch.merges.running` persistently high
+- `traceway.ch.delayed_inserts.delta` > 0 across multiple intervals (then `rejected_inserts` if ignored)
+- `traceway.ch.disk.used_pcnt` rising, `traceway.ch.memory.tracking_bytes` near the host's RAM
+- `traceway.ingest.batch.insert_ms` p95 high **while the ClickHouse host's CPU is also high**
+
+Fix: more CPU/RAM/disk for ClickHouse, faster disks, or sharding. Kafka won't help here: a buffer in front of a database that's saturated on average just delays the inevitable.
+
+### Scale the backend server when the Go process is the bottleneck
+
+- `cpu.used_pcnt` avg > 80% together with high `traceway.ingest.batch.convert_ms`; payload conversion (JSON/OTLP decoding, hashing) is CPU work that scales with traffic
+- `traceway.proc.rss_mb` approaching host RAM: before resizing, tune the source map cache variables above; they're the largest tunable consumer
+- `go.go_routines` growing without bound
+
+Fix: a bigger box, or multiple backend instances behind a load balancer (the backend is stateless apart from in-memory caches).
+
+### Add Kafka when the load is bursty and ClickHouse averages look healthy
+
+Because inserts happen inside the request, every ClickHouse hiccup or burst becomes client-visible `/api/report` latency. The tell-tale combination:
+
+- `traceway.ingest.batch.insert_ms` p95 spiking while ClickHouse CPU, disk, and merges look calm on average
+- `traceway.ch.pool.open` pinned at 15 (pool saturated) during peaks
+- `traceway.recordings.dropped.delta` > 0; the one buffered path is already overflowing during bursts
+- P95 on `POST /api/report` rising even though total `traceway.ch.inserted_rows.delta` is well within what ClickHouse handles at steady state
+
+That pattern means ClickHouse can absorb your *average* write rate but not your *peaks*, and the synchronous path turns peaks into client errors and data loss. A queue (Kafka) between the HTTP handlers and ClickHouse decouples client latency from insert latency, absorbs spikes, and enables larger, better-shaped batches.
+
+### Rule of thumb
+
+| Pattern | Action |
+|---------|--------|
+| High `convert_ms` + high backend CPU | Scale the backend |
+| Sustained parts/merge/disk/memory pressure on CH | Scale ClickHouse |
+| Bursty `insert_ms` spikes + drops + pool saturation while CH averages are calm | Add Kafka |

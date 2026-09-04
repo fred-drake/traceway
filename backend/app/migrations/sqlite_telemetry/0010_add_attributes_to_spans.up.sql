@@ -1,0 +1,1 @@
+ALTER TABLE spans ADD COLUMN attributes TEXT NOT NULL DEFAULT '{}';

@@ -3,7 +3,7 @@ package controllers
 import (
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
 	"net/http"
 	"net/url"
 	"time"
@@ -47,12 +47,12 @@ func (e taskController) FindAllTasks(c *gin.Context) {
 
 	var request TaskSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
 	span := traceway.StartSpan(c, "loading tasks")
-	tasks, total, err := repositories.TaskRepository.FindAll(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy)
+	tasks, total, err := telemetry.TaskRepository.FindAll(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading tasks: %w", err))
@@ -79,12 +79,12 @@ func (e taskController) FindGroupedByTaskName(c *gin.Context) {
 
 	var request TaskSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
 	span := traceway.StartSpan(c, "loading grouped tasks")
-	stats, total, err := repositories.TaskRepository.FindGroupedByTaskName(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection, request.Search, request.RootFilter)
+	stats, total, err := telemetry.TaskRepository.FindGroupedByTaskName(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection, request.Search, request.RootFilter)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading stats by name: %w", err))
@@ -123,12 +123,12 @@ func (e taskController) FindByTaskName(c *gin.Context) {
 
 	var request TaskInstancesRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
 	span := traceway.StartSpan(c, "loading task instances")
-	tasks, total, err := repositories.TaskRepository.FindByTaskName(c, projectId, taskName, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection)
+	tasks, total, err := telemetry.TaskRepository.FindByTaskName(c, projectId, taskName, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading tasks by name: %w", err))
@@ -137,7 +137,7 @@ func (e taskController) FindByTaskName(c *gin.Context) {
 
 	// Get aggregate stats for this task
 	span = traceway.StartSpan(c, "loading task stats")
-	stats, err := repositories.TaskRepository.GetTaskStats(c, projectId, taskName, request.FromDate, request.ToDate)
+	stats, err := telemetry.TaskRepository.GetTaskStats(c, projectId, taskName, request.FromDate, request.ToDate)
 	span.End()
 	if err != nil {
 		// Don't fail the request if stats fail, just return nil stats

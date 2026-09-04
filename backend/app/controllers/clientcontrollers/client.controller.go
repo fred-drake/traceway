@@ -3,7 +3,6 @@ package clientcontrollers
 import (
 	"bytes"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,15 +11,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/hooks"
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
 	"github.com/tracewayapp/traceway/backend/app/models/clientmodels"
 	"github.com/tracewayapp/traceway/backend/app/monitoring"
 	"github.com/tracewayapp/traceway/backend/app/recordings"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
 	"github.com/tracewayapp/traceway/backend/app/services"
+	"github.com/tracewayapp/traceway/backend/app/symbolicator/sourcemap/jsstack"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -29,9 +28,6 @@ import (
 
 type clientController struct{}
 
-// isEmptyRaw reports whether a json.RawMessage carries no meaningful payload —
-// nil, blank, `null`, `[]`, or `{}` all count as empty. Used to drop session
-// recordings that would otherwise just be wasted S3 writes.
 func isEmptyRaw(r json.RawMessage) bool {
 	if len(r) == 0 {
 		return true
@@ -42,37 +38,91 @@ func isEmptyRaw(r json.RawMessage) bool {
 		bytes.Equal(trimmed, []byte("{}"))
 }
 
+func symbolicateRecordingErrorLogs(c *gin.Context, projectId uuid.UUID, raw json.RawMessage) json.RawMessage {
+	var logs []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &logs); err != nil {
+		return raw
+	}
+	changed := false
+	for _, entry := range logs {
+		var level string
+		if err := json.Unmarshal(entry["level"], &level); err != nil || !strings.EqualFold(level, "error") {
+			continue
+		}
+		var message string
+		if err := json.Unmarshal(entry["message"], &message); err != nil {
+			continue
+		}
+		canonical, ok := jsstack.Canonicalize(message)
+		if !ok {
+			continue
+		}
+		resolved := services.ResolveStackTrace(c, projectId, canonical, nil)
+		if resolved == canonical {
+			continue
+		}
+		encoded, err := json.Marshal(resolved)
+		if err != nil {
+			continue
+		}
+		entry["message"] = encoded
+		changed = true
+	}
+	if !changed {
+		return raw
+	}
+	out, err := json.Marshal(logs)
+	if err != nil {
+		return raw
+	}
+	return out
+}
+
 type ReportRequest struct {
 	CollectionFrames []*clientmodels.CollectionFrame `json:"collectionFrames"`
 	AppVersion       string                          `json:"appVersion"`
 	ServerName       string                          `json:"serverName"`
+	ProguardUuid     string                          `json:"proguardUuid"`
 }
 
 func (e clientController) Report(c *gin.Context) {
+	monitoring.IngestStarted()
+	defer monitoring.IngestFinished()
+
 	projectId, err := middleware.GetProjectId(c)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("UseClientAuth middleware must be applied: %w", err))
 		return
 	}
 
-	if project, exists := c.Get(middleware.ProjectContextKey); exists {
-		if p, ok := project.(*models.Project); ok && p.OrganizationId != nil {
-			if !hooks.CanReport(*p.OrganizationId) {
-				monitoring.RecordRateLimited(*p.OrganizationId)
-				c.AbortWithStatus(http.StatusTooManyRequests)
-				return
-			}
+	var project *models.Project
+	if projectAsAny, exists := c.Get(middleware.ProjectContextKey); exists {
+		if p, ok := projectAsAny.(*models.Project); ok {
+			project = p
 		}
+	}
+
+	orgId := 0
+	hasOrg := project != nil && project.OrganizationId != nil
+	if hasOrg {
+		orgId = *project.OrganizationId
 	}
 
 	parseSpan := traceway.StartSpan(c, "report.parse_body")
 	var request ReportRequest
 	if err := c.ShouldBindBodyWithJSON(&request); err != nil {
 		parseSpan.End()
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectIngestBindError(c, err, err.Error())
 		return
 	}
 	parseSpan.End()
+
+	bodyBytes := 0
+	if cb, ok := c.Get(gin.BodyBytesKey); ok {
+		if b, ok := cb.([]byte); ok {
+			bodyBytes = len(b)
+		}
+	}
 
 	convertStart := time.Now()
 
@@ -85,10 +135,6 @@ func (e clientController) Report(c *gin.Context) {
 
 	var recordingsWork []recordings.Job
 
-	// Map frontend sessionRecordingId → backend-generated exception UUID.
-	// Used only for the legacy exception-bound recording path; the always-on
-	// session linkage uses the SDK-supplied sessionId UUID directly (it IS
-	// the session row id by design, so no in-request map is needed).
 	recordingIdToExceptionId := map[string]uuid.UUID{}
 
 	convertSpan := traceway.StartSpan(c, "report.convert_frames")
@@ -96,9 +142,7 @@ func (e clientController) Report(c *gin.Context) {
 		for _, cs := range cf.Sessions {
 			s := cs.ToSession(request.AppVersion, request.ServerName)
 			s.ProjectId = projectId
-			// The SDK can't see the public-facing IP; we stamp it server-side
-			// into the attributes blob so the dashboard surfaces it alongside
-			// browser/url/viewport collected by the SDK.
+
 			if clientIP := c.ClientIP(); clientIP != "" {
 				if s.Attributes == nil {
 					s.Attributes = map[string]string{}
@@ -129,34 +173,22 @@ func (e clientController) Report(c *gin.Context) {
 				spansToInsert = append(spansToInsert, span)
 			}
 		}
-		projectAsAny, projectExists := c.Get(middleware.ProjectContextKey)
-		var project *models.Project
-		if projectExists {
-			if p, ok := projectAsAny.(*models.Project); ok {
-				project = p
-			}
-		}
-
-		var sourceMaps *[]*models.SourceMap
-		if project != nil && isJsFramework(project.Framework) {
-			loadSpan := traceway.StartSpan(c, "report.load_source_maps")
-			sourceMapsLoaded, err := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.SourceMap, error) {
-				if request.AppVersion != "" {
-					return repositories.SourceMapRepository.FindByProjectAndVersion(tx, projectId, request.AppVersion)
-				}
-				return repositories.SourceMapRepository.FindLatestByProject(tx, projectId)
-			})
-			loadSpan.End()
-			if err == nil && len(sourceMapsLoaded) > 0 {
-				sourceMaps = &sourceMapsLoaded
-			}
-		}
+		resolveJs := project != nil && project.SourceMapToken != nil && jsFrameworks[project.Framework]
+		resolveDart := project != nil && project.SourceMapToken != nil && project.Framework == "flutter"
+		resolveIos := project != nil && project.SourceMapToken != nil && project.Framework == "ios"
+		resolveAndroid := project != nil && project.SourceMapToken != nil && project.Framework == "android"
 
 		resolveSpan := traceway.StartSpan(c, "report.resolve_stack_traces")
 		for _, cst := range cf.StackTraces {
 			resolvedStackTrace := cst.StackTrace
-			if sourceMaps != nil {
-				resolvedStackTrace = services.ResolveStackTrace(c, projectId, cst.StackTrace, *sourceMaps)
+			if resolveJs {
+				resolvedStackTrace = services.ResolveStackTrace(c, projectId, cst.StackTrace, cst.DebugIds)
+			} else if resolveDart {
+				resolvedStackTrace = services.ResolveDartStackTrace(c, projectId, cst.StackTrace)
+			} else if resolveIos {
+				resolvedStackTrace = services.ResolveIOSStackTrace(c, projectId, cst.StackTrace)
+			} else if resolveAndroid {
+				resolvedStackTrace = services.ResolveAndroidStackTrace(c, projectId, cst.StackTrace, request.ProguardUuid)
 			}
 			est := cst.ToExceptionStackTrace(ComputeExceptionHash(resolvedStackTrace, cst.IsMessage), request.AppVersion, request.ServerName)
 			est.StackTrace = resolvedStackTrace
@@ -165,10 +197,7 @@ func (e clientController) Report(c *gin.Context) {
 			if cst.SessionRecordingId != nil {
 				recordingIdToExceptionId[*cst.SessionRecordingId] = est.Id
 			}
-			// The SDK-provided session UID is the session row id by design, so
-			// parse it directly. The parent `sessions` row may have been
-			// upserted in an earlier request — we don't require it in this
-			// batch.
+
 			if cst.SessionId != nil {
 				if parsed, err := uuid.Parse(*cst.SessionId); err == nil {
 					est.SessionId = &parsed
@@ -185,10 +214,7 @@ func (e clientController) Report(c *gin.Context) {
 		}
 
 		for _, sr := range cf.SessionRecordings {
-			// A recording can be exception-bound (legacy path), session-bound
-			// (always-on path), or both. Exception linkage requires the
-			// exception to be in this batch; session linkage doesn't, since
-			// the SDK-provided sessionId is the session row id by design.
+
 			var exceptionId uuid.UUID
 			if sr.ExceptionId != "" {
 				if id, ok := recordingIdToExceptionId[sr.ExceptionId]; ok {
@@ -206,6 +232,9 @@ func (e clientController) Report(c *gin.Context) {
 			}
 			if isEmptyRaw(sr.Events) && isEmptyRaw(sr.Logs) && isEmptyRaw(sr.Actions) {
 				continue
+			}
+			if resolveJs && !isEmptyRaw(sr.Logs) {
+				sr.Logs = symbolicateRecordingErrorLogs(c, projectId, sr.Logs)
 			}
 			body, err := json.Marshal(sr)
 			if err != nil {
@@ -232,12 +261,48 @@ func (e clientController) Report(c *gin.Context) {
 	}
 	convertSpan.End()
 
+	var droppedHealthchecks int
+	endpointsToInsert, spansToInsert, droppedHealthchecks = services.FilterHealthchecks(project, endpointsToInsert, spansToInsert, exceptionStackTraceToInsert)
+	if droppedHealthchecks > 0 {
+		monitoring.RecordHealthchecksDropped(monitoring.SignalNative, droppedHealthchecks)
+	}
+
+	perm := hooks.IngestPermission{Exceptions: true, Data: true, Replay: true}
+	if hasOrg {
+		perm = hooks.IngestPermissionFor(orgId)
+	}
+
+	recordingBytes := 0
+	for _, rw := range recordingsWork {
+		recordingBytes += len(rw.Body)
+	}
+	telemetryBytes := bodyBytes - recordingBytes
+	if telemetryBytes < 0 {
+		telemetryBytes = 0
+	}
+
+	if !perm.Exceptions {
+		exceptionStackTraceToInsert = nil
+	}
+	if !perm.Data {
+		endpointsToInsert = nil
+		tasksToInsert = nil
+		spansToInsert = nil
+		metricPointsToInsert = nil
+	}
+	if !perm.Replay {
+		recordingsWork = nil
+	}
+	if hasOrg && (!perm.Exceptions || !perm.Data) {
+		monitoring.RecordRateLimited(orgId)
+	}
+
 	convertMs := float64(time.Since(convertStart).Microseconds()) / 1000.0
 	insertStart := time.Now()
 
 	if len(endpointsToInsert) > 0 {
 		insertSpan := traceway.StartSpan(c, "report.insert.endpoints")
-		err := repositories.EndpointRepository.InsertAsync(c, endpointsToInsert)
+		err := telemetry.EndpointRepository.InsertAsync(c, endpointsToInsert)
 		insertSpan.End()
 		if err != nil {
 			c.AbortWithError(500, traceway.NewStackTraceErrorf("error inserting endpointsToInsert: %w", err))
@@ -247,7 +312,7 @@ func (e clientController) Report(c *gin.Context) {
 
 	if len(tasksToInsert) > 0 {
 		insertSpan := traceway.StartSpan(c, "report.insert.tasks")
-		err := repositories.TaskRepository.InsertAsync(c, tasksToInsert)
+		err := telemetry.TaskRepository.InsertAsync(c, tasksToInsert)
 		insertSpan.End()
 		if err != nil {
 			c.AbortWithError(500, traceway.NewStackTraceErrorf("error inserting tasksToInsert: %w", err))
@@ -257,7 +322,7 @@ func (e clientController) Report(c *gin.Context) {
 
 	if len(sessionsToUpsert) > 0 {
 		insertSpan := traceway.StartSpan(c, "report.upsert.sessions")
-		err := repositories.SessionRepository.Upsert(c, sessionsToUpsert)
+		err := telemetry.SessionRepository.Upsert(c, sessionsToUpsert)
 		insertSpan.End()
 		if err != nil {
 			c.AbortWithError(500, traceway.NewStackTraceErrorf("error upserting sessions: %w", err))
@@ -266,7 +331,7 @@ func (e clientController) Report(c *gin.Context) {
 	}
 
 	exceptionInsertSpan := traceway.StartSpan(c, "report.insert.exceptions")
-	err = repositories.ExceptionStackTraceRepository.InsertAsync(c, exceptionStackTraceToInsert)
+	err = telemetry.ExceptionStackTraceRepository.InsertAsync(c, exceptionStackTraceToInsert)
 	exceptionInsertSpan.End()
 
 	if err != nil {
@@ -276,7 +341,7 @@ func (e clientController) Report(c *gin.Context) {
 
 	if len(metricPointsToInsert) > 0 {
 		insertSpan := traceway.StartSpan(c, "report.insert.metric_points")
-		err := repositories.MetricPointRepository.InsertAsync(c, metricPointsToInsert)
+		err := telemetry.MetricPointRepository.InsertAsync(c, metricPointsToInsert)
 		insertSpan.End()
 		if err != nil {
 			c.AbortWithError(500, traceway.NewStackTraceErrorf("error inserting metricPointsToInsert: %w", err))
@@ -288,7 +353,7 @@ func (e clientController) Report(c *gin.Context) {
 	}
 
 	spanInsertSpan := traceway.StartSpan(c, "report.insert.spans")
-	err = repositories.SpanRepository.InsertAsync(c, spansToInsert)
+	err = telemetry.SpanRepository.InsertAsync(c, spansToInsert)
 	spanInsertSpan.End()
 
 	if err != nil {
@@ -298,25 +363,32 @@ func (e clientController) Report(c *gin.Context) {
 
 	insertMs := float64(time.Since(insertStart).Microseconds()) / 1000.0
 	totalSize := len(endpointsToInsert) + len(tasksToInsert) + len(spansToInsert) + len(exceptionStackTraceToInsert) + len(metricPointsToInsert)
-	monitoring.RecordIngestBatch(monitoring.SignalNative, "report", convertMs, insertMs, totalSize)
+	monitoring.RecordIngestBatch(monitoring.SignalNative, "report", convertMs, insertMs, totalSize, bodyBytes)
 
 	var exceptionHashes []string
 	for _, est := range exceptionStackTraceToInsert {
 		exceptionHashes = append(exceptionHashes, est.ExceptionHash)
 	}
 
-	if project, exists := c.Get(middleware.ProjectContextKey); exists {
-		if p, ok := project.(*models.Project); ok && p.OrganizationId != nil {
-			hooks.BroadcastReport(hooks.ReportEvent{
-				OrganizationId:  *p.OrganizationId,
-				ProjectId:       projectId,
-				EndpointCount:   len(endpointsToInsert),
-				ErrorCount:      len(exceptionStackTraceToInsert),
-				TaskCount:       len(tasksToInsert),
-				RecordingCount:  len(recordingsWork),
-				ExceptionHashes: exceptionHashes,
-			})
+	if hasOrg {
+		ev := hooks.ReportEvent{
+			OrganizationId: orgId,
+			ProjectId:      projectId,
 		}
+		if perm.Data {
+			ev.EndpointCount = len(endpointsToInsert)
+			ev.TaskCount = len(tasksToInsert)
+			ev.TelemetryBytes = telemetryBytes
+		}
+		if perm.Exceptions {
+			ev.ErrorCount = len(exceptionStackTraceToInsert)
+			ev.ExceptionHashes = exceptionHashes
+		}
+		if perm.Replay {
+			ev.RecordingCount = len(recordingsWork)
+			ev.RecordingBytes = recordingBytes
+		}
+		hooks.BroadcastReport(ev)
 	}
 
 	for _, rw := range recordingsWork {
@@ -327,20 +399,24 @@ func (e clientController) Report(c *gin.Context) {
 }
 
 var (
-	errorMessageRe  = regexp.MustCompile(`(?m)^(\*?[\w.]+):\s*.+`)
-	causedByRe      = regexp.MustCompile(`(?m)^(Caused by:\s*[\w.$]+):\s*.+`)
-	absolutePathRe  = regexp.MustCompile(`/[^\s:]+/([^/\s:]+:\d+)`)
-	versionRe       = regexp.MustCompile(`@v[\d.]+`)
-	hexRe           = regexp.MustCompile(`0x[0-9a-fA-F]+`)
-	uuidRe          = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
-	largeNumberRe   = regexp.MustCompile(`(^|[^:\d])(\d{5,})($|[^\d])`)
-	emailRe         = regexp.MustCompile(`[\w.\-]+@[\w.\-]+\.\w+`)
-	ipRe            = regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?`)
-	goroutineRe     = regexp.MustCompile(`goroutine \d+`)
-	javaLineNumRe   = regexp.MustCompile(`\((\w[\w.$]*\.(?:java|kt|scala)):\d+\)`)
-	javaEllipsisRe  = regexp.MustCompile(`\.\.\. \d+ more`)
-	spacesRe        = regexp.MustCompile(`[ \t]+`)
-	newlinesRe      = regexp.MustCompile(`\n+`)
+	errorMessageRe = regexp.MustCompile(`(?m)^(\*?[\w.]+):\s*.+`)
+	causedByRe     = regexp.MustCompile(`(?m)^(Caused by:\s*[\w.$]+):\s*.+`)
+	jsFuncLineRe   = regexp.MustCompile(`(?m)^( {0,4})(.+)\(\)(\n {4}.+:\d+:\d+)$`)
+	urlOriginRe    = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.\-]*://[^/\s]*`)
+	absolutePathRe = regexp.MustCompile(`/[^\s:]+/([^/\s:]+:\d+)`)
+
+	laterLineColRe = regexp.MustCompile(`(?m)^(\s*.+:(?:[2-9]|[1-9]\d+)):\d+$`)
+	versionRe      = regexp.MustCompile(`@v[\d.]+`)
+	hexRe          = regexp.MustCompile(`0x[0-9a-fA-F]+`)
+	uuidRe         = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
+	largeNumberRe  = regexp.MustCompile(`(^|[^:\d])(\d{5,})($|[^\d])`)
+	emailRe        = regexp.MustCompile(`[\w.\-]+@[\w.\-]+\.\w+`)
+	ipRe           = regexp.MustCompile(`\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}(:\d+)?`)
+	goroutineRe    = regexp.MustCompile(`goroutine \d+`)
+	javaLineNumRe  = regexp.MustCompile(`\((\w[\w.$]*\.(?:java|kt|scala)):\d+\)`)
+	javaEllipsisRe = regexp.MustCompile(`\.\.\. \d+ more`)
+	spacesRe       = regexp.MustCompile(`[ \t]+`)
+	newlinesRe     = regexp.MustCompile(`\n+`)
 )
 
 func ComputeExceptionHash(stackTrace string, isMessage bool) string {
@@ -349,7 +425,11 @@ func ComputeExceptionHash(stackTrace string, isMessage bool) string {
 	if !isMessage {
 		normalized = causedByRe.ReplaceAllString(normalized, "$1")
 		normalized = errorMessageRe.ReplaceAllString(normalized, "$1")
+		normalized = jsFuncLineRe.ReplaceAllString(normalized, "${1}<fn>${3}")
+
+		normalized = urlOriginRe.ReplaceAllString(normalized, "")
 		normalized = absolutePathRe.ReplaceAllString(normalized, "$1")
+		normalized = laterLineColRe.ReplaceAllString(normalized, "$1")
 		normalized = versionRe.ReplaceAllString(normalized, "")
 		normalized = hexRe.ReplaceAllString(normalized, "<hex>")
 		normalized = uuidRe.ReplaceAllString(normalized, "<uuid>")
@@ -372,6 +452,7 @@ var jsFrameworks = map[string]bool{
 	"react":        true,
 	"svelte":       true,
 	"vuejs":        true,
+	"jquery":       true,
 	"nextjs":       true,
 	"nestjs":       true,
 	"express":      true,
@@ -379,8 +460,16 @@ var jsFrameworks = map[string]bool{
 	"react-native": true,
 }
 
-func isJsFramework(framework string) bool {
-	return jsFrameworks[framework]
+var frontendJsFrameworks = map[string]bool{
+	"react":        true,
+	"svelte":       true,
+	"vuejs":        true,
+	"jquery":       true,
+	"react-native": true,
+}
+
+func IsFrontendFramework(framework string) bool {
+	return frontendJsFrameworks[framework]
 }
 
 var ClientController = clientController{}

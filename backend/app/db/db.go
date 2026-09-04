@@ -15,31 +15,27 @@ var DB *sql.DB          // PostgreSQL-replacement: relational/config data (trans
 var TelemetryDB *sql.DB // ClickHouse-replacement: append-only telemetry data (non-transactional)
 var Driver lit.Driver = lit.PostgreSQL
 
+var telemetryIsDuckDB bool
+
 func IsSQLite() bool {
 	return Driver == lit.SQLite
 }
 
+// Init opens the main (transactional) database selected by the transactional_* build axis, then
+// the telemetry database selected by the telemetry_* build axis.
+func Init() error {
+	if err := initMainDB(); err != nil {
+		return err
+	}
+	return initTelemetryDB()
+}
+
+func IsDuckDBTelemetry() bool {
+	return telemetryIsDuckDB
+}
+
 func initPostgres() error {
-	cfg := config.Config
-
-	host := cfg.PostgresHost
-	port := cfg.PostgresPort
-	database := cfg.PostgresDatabase
-	username := cfg.PostgresUsername
-	password := cfg.PostgresPassword
-	sslMode := cfg.PostgresSSLMode
-
-	if sslMode == "" {
-		sslMode = "disable"
-	}
-	if port == "" {
-		port = "5432"
-	}
-
-	connStr := fmt.Sprintf(
-		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
-		host, port, username, password, database, sslMode,
-	)
+	connStr := postgresConnectionString()
 
 	db, err := sql.Open("postgres", connStr)
 	if err != nil {
@@ -59,11 +55,30 @@ func initPostgres() error {
 	return nil
 }
 
+func postgresConnectionString() string {
+	cfg := config.Config
+	port := cfg.PostgresPort
+	sslMode := cfg.PostgresSSLMode
+
+	if sslMode == "" {
+		sslMode = "disable"
+	}
+	if port == "" {
+		port = "5432"
+	}
+
+	return fmt.Sprintf(
+		"host=%s port=%s user=%s password=%s dbname=%s sslmode=%s",
+		cfg.PostgresHost, port, cfg.PostgresUsername, cfg.PostgresPassword, cfg.PostgresDatabase, sslMode,
+	)
+}
+
 func GetDB() *sql.DB {
 	return DB
 }
 
 const TransactionContextKey = "dbTx"
+
 func GetTx(ctx context.Context) *sql.Tx {
 	if tx, ok := ctx.Value(TransactionContextKey).(*sql.Tx); ok {
 		return tx

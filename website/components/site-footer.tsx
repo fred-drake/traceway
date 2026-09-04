@@ -1,6 +1,8 @@
 import Link from "next/link";
 import Image from "next/image";
 import { Github } from "lucide-react";
+import { DiscordIcon } from "@/components/discord-icon";
+import { GITHUB_URL, DISCORD_URL } from "@/lib/links";
 
 type Column = {
   heading: string;
@@ -16,26 +18,31 @@ const COLUMNS: Column[] = [
       { label: "Metrics", href: "/product/metrics" },
       { label: "Session Replay", href: "/product/session-replay" },
       { label: "Exceptions / Stack Traces", href: "/product/stack-traces" },
+      { label: "Monitors", href: "/product/monitors" },
+      { label: "On-Call", href: "/product/on-call" },
+      { label: "Fleet Overview", href: "/product/fleet" },
     ],
   },
   {
     heading: "Specialized",
     links: [
+      { label: "Agent Skills", href: "/product/agent-skills" },
+      { label: "MCP Server", href: "/product/mcp" },
       { label: "AI Tracing", href: "/product/ai-tracing" },
+      { label: "Dashboards as Code", href: "/product/dashboards" },
       { label: "Performance", href: "/product/performance" },
       { label: "Flutter Session Replay", href: "/product/flutter-session-replay" },
+      { label: "Symbolicator", href: "/product/symbolication" },
     ],
   },
   {
     heading: "Resources",
     links: [
+      { label: "Blog", href: "/blog" },
+      { label: "Release Notes", href: "/releases" },
       { label: "Docs", href: "https://docs.tracewayapp.com", external: true },
-      { label: "GitHub", href: "https://github.com/tracewayapp/traceway", external: true },
-      {
-        label: "Live Demo",
-        href: "https://cloud.tracewayapp.com/login?email=demo@tracewayapp.com&password=demoaccount!",
-        external: true,
-      },
+      { label: "GitHub", href: GITHUB_URL, external: true },
+      { label: "Discord", href: DISCORD_URL, external: true },
     ],
   },
   {
@@ -58,10 +65,7 @@ const COLUMNS: Column[] = [
 export function SiteFooter() {
   const year = new Date().getFullYear();
   return (
-    <footer
-      className="mt-20"
-      style={{ borderTop: "1px solid var(--hair)", padding: "50px 0 40px" }}
-    >
+    <footer style={{ borderTop: "1px solid var(--hair)", padding: "50px 0 40px" }}>
       <div className="wrap">
         <div className="footer-grid grid gap-10 md:gap-9 grid-cols-2 md:grid-cols-[1.2fr_repeat(5,1fr)]">
           <div className="col-span-2 md:col-span-1">
@@ -82,13 +86,22 @@ export function SiteFooter() {
             </p>
             <div className="mt-5 flex items-center gap-2">
               <Link
-                href="https://github.com/tracewayapp/traceway"
+                href={GITHUB_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="h-8 w-8 inline-flex items-center justify-center rounded-md text-[color:var(--fg-2)] hover:text-[color:var(--fg-0)] hover:bg-[color:var(--ink-2)] transition-colors"
                 aria-label="GitHub"
               >
                 <Github className="h-4 w-4" />
+              </Link>
+              <Link
+                href={DISCORD_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="h-8 w-8 inline-flex items-center justify-center rounded-md text-[color:var(--fg-2)] hover:text-[color:var(--fg-0)] hover:bg-[color:var(--ink-2)] transition-colors"
+                aria-label="Discord"
+              >
+                <DiscordIcon className="h-4 w-4" />
               </Link>
             </div>
           </div>

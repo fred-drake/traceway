@@ -4,6 +4,13 @@
   "docker-compose": "Docker Compose",
   "minimal": "Minimal Container",
   "sqlite": "SQLite",
+  "duckdb": "DuckDB",
+  "browser": "Browser (Monitors)",
+  "runner": "Remote Runners",
   "local-setup": "Local Setup",
-  "haloy": "Haloy"
+  "storage": "Blob Storage",
+  "haloy": "Haloy",
+  "capacity-monitoring": "Capacity & Self-Monitoring",
+  "upgrade-1-8": "Upgrading to 1.8",
+  "upgrade-request-limits": "Upgrade Notes: Request Limits"
 }

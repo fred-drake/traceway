@@ -12,7 +12,7 @@ import (
 
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
 )
 
 type logController struct{}
@@ -20,9 +20,16 @@ type logController struct{}
 var LogController = logController{}
 
 type LogAttributeFilterRequest struct {
-	Scope string `json:"scope"` // "resource" | "scope" | "log"
-	Key   string `json:"key"`
-	Value string `json:"value"`
+	Scope    string `json:"scope"` // "resource" | "scope" | "log"
+	Key      string `json:"key"`
+	Value    string `json:"value"`
+	Exclude  bool   `json:"exclude"`
+	Contains bool   `json:"contains"`
+}
+
+type LogPaginationParams struct {
+	Page     int `json:"page" binding:"min=1"`
+	PageSize int `json:"pageSize" binding:"min=1,max=500"`
 }
 
 type LogSearchRequest struct {
@@ -35,16 +42,21 @@ type LogSearchRequest struct {
 	MinSeverity        uint8                       `json:"minSeverity"`
 	ServiceName        string                      `json:"serviceName"`
 	TraceId            string                      `json:"traceId"`
+	SpanId             string                      `json:"spanId"`
+	ScopeName          string                      `json:"scopeName"`
+	Body               string                      `json:"body"`
 	DistributedTraceId string                      `json:"distributedTraceId"`
 	ExcludeTraceId     string                      `json:"excludeTraceId"`
 	AttributeFilters   []LogAttributeFilterRequest `json:"attributeFilters"`
-	Pagination         PaginationParams            `json:"pagination"`
+	Pagination         LogPaginationParams         `json:"pagination"`
 }
 
 // Max time range allowed for body search without any other selector. Keeps a
 // naïve "find all logs containing 'error' for the past 30 days" query from
-// scanning the full body column.
-const bodySearchUnscopedMaxRange = 24 * time.Hour
+// scanning the full body column. The slack matters: the frontend's "24h"
+// preset rounds the range end up to the end of the current minute, so the
+// received range is slightly over 24h and must not trip the gate.
+const bodySearchUnscopedMaxRange = 24*time.Hour + 5*time.Minute
 
 func (l logController) List(c *gin.Context) {
 	projectId, err := middleware.GetProjectId(c)
@@ -55,7 +67,7 @@ func (l logController) List(c *gin.Context) {
 
 	var request LogSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -70,6 +82,9 @@ func (l logController) List(c *gin.Context) {
 		hasSelector := request.MinSeverity > 0 ||
 			request.ServiceName != "" ||
 			request.TraceId != "" ||
+			request.SpanId != "" ||
+			request.ScopeName != "" ||
+			request.Body != "" ||
 			request.DistributedTraceId != "" ||
 			len(request.AttributeFilters) > 0
 		rangeTooWide := request.ToDate.Sub(request.FromDate) > bodySearchUnscopedMaxRange
@@ -81,19 +96,21 @@ func (l logController) List(c *gin.Context) {
 		}
 	}
 
-	attrFilters := make([]repositories.LogAttributeFilter, 0, len(request.AttributeFilters))
+	attrFilters := make([]telemetry.LogAttributeFilter, 0, len(request.AttributeFilters))
 	for _, f := range request.AttributeFilters {
 		if f.Key == "" || f.Scope == "" {
 			continue
 		}
-		attrFilters = append(attrFilters, repositories.LogAttributeFilter{
-			Scope: f.Scope,
-			Key:   f.Key,
-			Value: f.Value,
+		attrFilters = append(attrFilters, telemetry.LogAttributeFilter{
+			Scope:    f.Scope,
+			Key:      f.Key,
+			Value:    f.Value,
+			Exclude:  f.Exclude,
+			Contains: f.Contains,
 		})
 	}
 
-	params := repositories.LogSearchParams{
+	params := telemetry.LogSearchParams{
 		ProjectId:        projectId,
 		FromDate:         request.FromDate,
 		ToDate:           request.ToDate,
@@ -102,6 +119,9 @@ func (l logController) List(c *gin.Context) {
 		MinSeverity:      request.MinSeverity,
 		ServiceName:      request.ServiceName,
 		TraceId:          request.TraceId,
+		SpanId:           request.SpanId,
+		ScopeName:        request.ScopeName,
+		Body:             request.Body,
 		AttributeFilters: attrFilters,
 		OrderBy:          request.OrderBy,
 		SortDirection:    request.SortDirection,
@@ -115,7 +135,7 @@ func (l logController) List(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid distributedTraceId"})
 			return
 		}
-		traceIds, err := l.resolveDistributedTraceIds(c, dtid, projectId, request.ExcludeTraceId)
+		traceIds, err := l.resolveDistributedTraceIds(c, dtid, projectId, request.ExcludeTraceId, request.FromDate)
 		if err != nil {
 			c.AbortWithError(500, traceway.NewStackTraceErrorf("error resolving distributed trace: %w", err))
 			return
@@ -137,7 +157,7 @@ func (l logController) List(c *gin.Context) {
 	}
 
 	span := traceway.StartSpan(c, "loading logs")
-	records, total, err := repositories.LogRecordRepository.Search(c, params)
+	records, total, err := telemetry.LogRecordRepository.Search(c, params)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading logs: %w", err))
@@ -155,20 +175,29 @@ func (l logController) List(c *gin.Context) {
 	})
 }
 
-func (l logController) resolveDistributedTraceIds(ctx context.Context, dtid uuid.UUID, projectId uuid.UUID, excludeTraceHex string) ([]string, error) {
+func (l logController) resolveDistributedTraceIds(ctx context.Context, dtid uuid.UUID, projectId uuid.UUID, excludeTraceHex string, recordedAt time.Time) ([]string, error) {
 	projectIds := []uuid.UUID{projectId}
 
-	endpoints, err := repositories.EndpointRepository.FindByDistributedTraceId(ctx, dtid, projectIds)
+	var recordedAtHint *time.Time
+	if !recordedAt.IsZero() {
+		recordedAtHint = &recordedAt
+	}
+
+	endpoints, err := telemetry.EndpointRepository.FindByDistributedTraceId(ctx, dtid, projectIds, recordedAtHint)
 	if err != nil {
 		return nil, err
 	}
-	tasks, err := repositories.TaskRepository.FindByDistributedTraceId(ctx, dtid, projectIds)
+	tasks, err := telemetry.TaskRepository.FindByDistributedTraceId(ctx, dtid, projectIds, recordedAtHint)
+	if err != nil {
+		return nil, err
+	}
+	aiTraces, err := telemetry.AiTraceRepository.FindByDistributedTraceId(ctx, dtid, projectIds, recordedAtHint)
 	if err != nil {
 		return nil, err
 	}
 
-	seen := make(map[string]struct{}, len(endpoints)+len(tasks))
-	result := make([]string, 0, len(endpoints)+len(tasks))
+	seen := make(map[string]struct{}, len(endpoints)+len(tasks)+len(aiTraces))
+	result := make([]string, 0, len(endpoints)+len(tasks)+len(aiTraces))
 	add := func(id uuid.UUID) {
 		h := hex.EncodeToString(id[:])
 		if _, ok := seen[h]; ok {
@@ -185,6 +214,9 @@ func (l logController) resolveDistributedTraceIds(ctx context.Context, dtid uuid
 	}
 	for _, t := range tasks {
 		add(t.Id)
+	}
+	for _, a := range aiTraces {
+		add(a.Id)
 	}
 	return result, nil
 }

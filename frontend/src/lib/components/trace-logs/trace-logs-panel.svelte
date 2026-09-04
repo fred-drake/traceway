@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { SvelteMap } from 'svelte/reactivity';
 	import { api } from '$lib/api';
 	import * as Card from '$lib/components/ui/card';
 	import * as Table from '$lib/components/ui/table';
@@ -7,8 +8,11 @@
 	import { LoadingCircle } from '$lib/components/ui/loading-circle';
 	import { SeverityBadge } from '$lib/components/ui/severity-badge';
 	import ExpandedLogRow from './expanded-log-row.svelte';
+	import LogMessage from './log-message.svelte';
 	import { formatDateTime } from '$lib/utils/formatters';
 	import { getTimezone } from '$lib/state/timezone.svelte';
+	import { underlineTabTriggerClass, underlineTabListClass } from '$lib/utils/tabs';
+	import { cn } from '$lib/utils';
 	import { spanIdUuidToHex } from '$lib/utils/span-id';
 	import type { Span } from '$lib/types/spans';
 
@@ -34,24 +38,20 @@
 		traceId,
 		distributedTraceId = null,
 		spans,
-		rootSpan,
 		traceRecordedAt
 	}: {
 		projectId: string;
 		traceId: string;
 		distributedTraceId?: string | null;
 		spans: Span[];
-		rootSpan: { id: string; name: string };
 		traceRecordedAt: string;
 	} = $props();
-
-	// rootSpan kept on the prop surface for future use; not referenced here now
-	// that the root-span chip fallback is gone.
-	void rootSpan;
 
 	const timezone = $derived(getTimezone());
 
 	let activeTab = $state<'this-trace' | 'all-distributed'>('this-trace');
+
+	const tabTriggerClass = cn(underlineTabTriggerClass, 'mb-0 pb-2');
 
 	// This-trace data
 	let logs = $state<LogRecord[]>([]);
@@ -66,7 +66,7 @@
 	let distributedError = $state('');
 
 	const childSpanNameByHex = $derived.by(() => {
-		const m = new Map<string, string>();
+		const m = new SvelteMap<string, string>();
 		for (const s of spans) {
 			const hex = spanIdUuidToHex(s.id);
 			if (hex) m.set(hex, s.name);
@@ -154,43 +154,27 @@
 		expandedId = expandedId === id ? null : id;
 	}
 
-	function firstLine(body: string): string {
-		if (!body) return '';
-		const nl = body.indexOf('\n');
-		return nl === -1 ? body : body.slice(0, nl);
-	}
-
 	onMount(() => {
 		loadTraceLogs();
 	});
 </script>
 
-<Card.Root class="gap-0 pb-0 overflow-hidden">
-	<Card.Header>
+<Card.Root class="gap-0 overflow-hidden pb-0">
+	<Card.Header class={distributedTraceId ? '' : 'pb-4'}>
 		<Card.Title>Logs</Card.Title>
 	</Card.Header>
 	<Card.Content class="p-0">
 		<Tabs.Root value={activeTab} onValueChange={onTabChange}>
-			<Tabs.List
-				class="h-auto w-full justify-start gap-4 rounded-none border-b bg-transparent p-0 pl-6 pt-0 pb-2"
-			>
-				<Tabs.Trigger
-					value="this-trace"
-					class="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-2 pt-0 text-sm font-medium text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-				>
-					This Trace
-				</Tabs.Trigger>
-				{#if distributedTraceId}
-					<Tabs.Trigger
-						value="all-distributed"
-						class="rounded-none border-b-2 border-transparent bg-transparent px-0 pb-2 pt-0 text-sm font-medium text-muted-foreground shadow-none data-[state=active]:border-primary data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none"
-					>
+			{#if distributedTraceId}
+				<Tabs.List class={cn(underlineTabListClass, 'pb-2 pl-6')}>
+					<Tabs.Trigger value="this-trace" class={tabTriggerClass}>This Trace</Tabs.Trigger>
+					<Tabs.Trigger value="all-distributed" class={tabTriggerClass}>
 						All Distributed Traces
 					</Tabs.Trigger>
-				{/if}
-			</Tabs.List>
+				</Tabs.List>
+			{/if}
 
-			<Tabs.Content value="this-trace" class="mt-0">
+			<Tabs.Content value="this-trace" class={distributedTraceId ? 'mt-0' : 'mt-0 border-t'}>
 				{#if loading}
 					<div class="flex items-center justify-center py-6">
 						<LoadingCircle size="lg" />
@@ -214,10 +198,7 @@
 						<Table.Body>
 							{#each logs as log (log.id)}
 								{@const spanName = resolveSpanName(log)}
-								<Table.Row
-									class="h-8 cursor-pointer hover:bg-muted/50"
-									onclick={() => toggleExpanded(log.id)}
-								>
+								<Table.Row class="h-8 cursor-pointer" onclick={() => toggleExpanded(log.id)}>
 									<Table.Cell class="py-1.5 pl-6 text-xs text-muted-foreground tabular-nums">
 										{formatDateTime(log.timestamp, { timezone })}
 									</Table.Cell>
@@ -228,7 +209,7 @@
 										/>
 									</Table.Cell>
 									<Table.Cell class="max-w-[600px] truncate py-1.5 font-mono text-xs">
-										{firstLine(log.body)}
+										<LogMessage body={log.body} attributes={log.logAttributes} />
 									</Table.Cell>
 									<Table.Cell class="py-1.5 pr-6">
 										{#if spanName}
@@ -281,10 +262,7 @@
 							</Table.Header>
 							<Table.Body>
 								{#each distributedLogs as log (log.id)}
-									<Table.Row
-										class="h-8 cursor-pointer hover:bg-muted/50"
-										onclick={() => toggleExpanded(log.id)}
-									>
+									<Table.Row class="h-8 cursor-pointer" onclick={() => toggleExpanded(log.id)}>
 										<Table.Cell class="py-1.5 pl-6 text-xs text-muted-foreground tabular-nums">
 											{formatDateTime(log.timestamp, { timezone })}
 										</Table.Cell>
@@ -295,7 +273,7 @@
 											/>
 										</Table.Cell>
 										<Table.Cell class="max-w-[500px] truncate py-1.5 font-mono text-xs">
-											{firstLine(log.body)}
+											<LogMessage body={log.body} attributes={log.logAttributes} />
 										</Table.Cell>
 										<Table.Cell class="py-1.5 text-xs text-muted-foreground">
 											{log.serviceName || '—'}

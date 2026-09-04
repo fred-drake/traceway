@@ -3,19 +3,22 @@
 	import { Button } from '$lib/components/ui/button';
 	import { Input } from '$lib/components/ui/input';
 	import { Label } from '$lib/components/ui/label';
+	import { ErrorAlert } from '$lib/components/ui/error-alert';
 	import * as Select from '$lib/components/ui/select';
 	import { Plus, Check, TriangleAlert } from '@lucide/svelte';
 	import * as Alert from '$lib/components/ui/alert';
 	import { toast } from 'svelte-sonner';
 	import { api } from '$lib/api';
 	import { projectsState, isFrontendFramework } from '$lib/state/projects.svelte';
+	import { ruleTypeOptions } from './rule-types';
+	import type { NotificationChannelConfig, NotificationRuleConfig } from '$lib/types/notifications';
 
 	interface NotificationChannel {
 		id: number;
 		projectId: string;
 		name: string;
 		channelType: string;
-		config: any;
+		config: NotificationChannelConfig;
 		enabled: boolean;
 		createdAt: string;
 	}
@@ -26,7 +29,7 @@
 		channelId: number;
 		name: string;
 		ruleType: string;
-		config: any;
+		config: NotificationRuleConfig;
 		enabled: boolean;
 		cooldownMinutes: number;
 		severity: string;
@@ -78,47 +81,19 @@
 	let dropPercent = $state(50);
 	let baselineWindowMinutes = $state(60);
 	let ignorePatterns = $state('');
-	let includeArchived = $state(true);
 	let traceName = $state('*');
 	let thresholdCost = $state(0.5);
+	let conversationThresholdCost = $state(5);
+	let flaggedTermsFilter = $state('');
 
 	const isEditing = $derived(rule !== null);
 
-	const ruleTypeOptions = [
-		{ value: 'new_error', label: 'New Issue' },
-		{ value: 'impact_score_critical', label: 'Impact Score Critical' },
-		{ value: 'impact_score_high', label: 'Impact Score High' },
-		{ value: 'impact_score_medium', label: 'Impact Score Medium' },
-		{ value: 'error_regression', label: 'Error Regression' },
-		{ value: 'error_rate_threshold', label: 'Error Rate' },
-		{ value: 'error_count_threshold', label: 'Error Count' },
-		{ value: 'endpoint_p95_threshold', label: 'Endpoint P95' },
-		{ value: 'endpoint_p99_threshold', label: 'Endpoint P99' },
-		{ value: 'endpoint_error_rate', label: 'Endpoint Error Rate' },
-		{ value: 'apdex_drop', label: 'Apdex Drop' },
-		{ value: 'metric_threshold', label: 'Metric Threshold' },
-		{ value: 'no_data', label: 'No Data' },
-		{ value: 'task_duration_threshold', label: 'Task Duration' },
-		{ value: 'task_failure_rate', label: 'Task Failure Rate' },
-		{ value: 'throughput_drop', label: 'Throughput Drop' },
-		{ value: 'ai_trace_cost', label: 'AI Trace Cost' }
-	];
-
 	const isFrontendProject = $derived(
-		!!projectsState.currentProject &&
-			isFrontendFramework(projectsState.currentProject.framework)
+		!!projectsState.currentProject && isFrontendFramework(projectsState.currentProject.framework)
 	);
 
 	const visibleRuleTypes = $derived(
-		isFrontendProject
-			? [{ value: 'new_error', label: 'New Issue' }]
-			: [
-					{ value: 'new_error', label: 'New Issue' },
-					{ value: 'impact_score_critical', label: 'Impact Score Critical' },
-					{ value: 'impact_score_high', label: 'Impact Score High' },
-					{ value: 'impact_score_medium', label: 'Impact Score Medium' },
-					{ value: 'ai_trace_cost', label: 'AI Trace Cost' }
-				]
+		isFrontendProject ? [{ value: 'new_error', label: 'New Issue' }] : ruleTypeOptions
 	);
 
 	$effect(() => {
@@ -137,7 +112,36 @@
 		impact_score_medium:
 			'Fires when an endpoint\u2019s impact score reaches medium level (\u2265 0.25), an early warning of emerging performance or reliability issues.',
 		ai_trace_cost:
-			'Fires when an individual AI trace exceeds a cost threshold. Monitors per-call spending across AI providers.'
+			'Fires when an individual AI trace exceeds a cost threshold. Monitors per-call spending across AI providers.',
+		ai_conversation_cost:
+			'Fires when the cumulative cost of a single AI conversation (over the last 24 hours) exceeds the threshold. Catches runaway agent loops and expensive sessions.',
+		ai_flagged_content:
+			'Fires when an AI conversation matches a flagged content term. Uses the built-in profanity list plus custom terms from the project’s AI settings; optionally narrow to specific terms below.',
+		error_regression: 'Fires when an error that was previously archived (resolved) occurs again.',
+		check_down:
+			'Fires when a monitor transitions to down (after its failure threshold), and sends a recovery notice when it comes back up. Applies to every monitor in this project.',
+		error_rate_threshold:
+			'Fires when the percentage of requests returning 5xx across all endpoints exceeds the threshold within the lookback window.',
+		error_count_threshold:
+			'Fires when the total number of errors recorded within the lookback window reaches the threshold.',
+		endpoint_p95_threshold:
+			'Fires when the P95 response time of an endpoint (or all endpoints) exceeds the threshold within the lookback window.',
+		endpoint_p99_threshold:
+			'Fires when the P99 response time of an endpoint (or all endpoints) exceeds the threshold within the lookback window.',
+		endpoint_error_rate:
+			'Fires when the percentage of 5xx responses on a specific endpoint exceeds the threshold within the lookback window.',
+		apdex_drop:
+			'Fires when the Apdex satisfaction score drops below the threshold within the lookback window.',
+		metric_threshold:
+			'Fires when an aggregated metric value violates the configured comparison against the threshold within the lookback window.',
+		no_data:
+			'Fires when no telemetry of the selected kind (endpoints, exceptions, metrics or tasks) has been received for the configured number of minutes.',
+		task_duration_threshold:
+			'Fires when the P95 duration of a background task exceeds the threshold within the lookback window.',
+		task_failure_rate:
+			'Fires when the percentage of background task executions that recorded an error exceeds the threshold within the lookback window.',
+		throughput_drop:
+			'Fires when request throughput drops by more than the configured percentage compared to the preceding baseline window.'
 	};
 
 	const operatorOptions = [
@@ -191,7 +195,6 @@
 		dropPercent = 50;
 		baselineWindowMinutes = 60;
 		ignorePatterns = '';
-		includeArchived = true;
 		traceName = '*';
 		thresholdCost = 0.5;
 	}
@@ -261,9 +264,6 @@
 			case 'new_error':
 				ignorePatterns = (cfg.ignorePatterns || []).join(', ');
 				break;
-			case 'error_regression':
-				includeArchived = cfg.includeArchived ?? true;
-				break;
 			case 'impact_score_critical':
 			case 'impact_score_high':
 			case 'impact_score_medium':
@@ -273,10 +273,16 @@
 				traceName = cfg.traceName ?? '*';
 				thresholdCost = cfg.thresholdCost ?? 0.5;
 				break;
+			case 'ai_conversation_cost':
+				conversationThresholdCost = cfg.thresholdCost ?? 5;
+				break;
+			case 'ai_flagged_content':
+				flaggedTermsFilter = (cfg.terms || []).join(', ');
+				break;
 		}
 	}
 
-	function buildConfig(): any {
+	function buildConfig(): NotificationRuleConfig {
 		switch (ruleType) {
 			case 'error_rate_threshold':
 				return { thresholdPercent, lookbackMinutes, minRequests };
@@ -306,14 +312,21 @@
 					.filter((p) => p);
 				return { ignorePatterns: patterns };
 			}
-			case 'error_regression':
-				return { includeArchived };
 			case 'impact_score_critical':
 			case 'impact_score_high':
 			case 'impact_score_medium':
 				return { minRequests };
 			case 'ai_trace_cost':
 				return { traceName, thresholdCost };
+			case 'ai_conversation_cost':
+				return { thresholdCost: conversationThresholdCost };
+			case 'ai_flagged_content': {
+				const terms = flaggedTermsFilter
+					.split(',')
+					.map((t) => t.trim().toLowerCase())
+					.filter((t) => t);
+				return { terms };
+			}
 			default:
 				return {};
 		}
@@ -373,7 +386,7 @@
 </script>
 
 <AlertDialog.Root {open} onOpenChange={handleOpenChange}>
-	<AlertDialog.Content class="max-w-lg max-h-[85vh] overflow-y-auto">
+	<AlertDialog.Content class="max-h-[85vh] max-w-lg overflow-y-auto">
 		<AlertDialog.Header>
 			<AlertDialog.Title>{isEditing ? 'Edit Rule' : 'New Rule'}</AlertDialog.Title>
 			<AlertDialog.Description>
@@ -390,25 +403,21 @@
 			}}
 			class="space-y-4"
 		>
+			<ErrorAlert {error} />
+
 			<div class="space-y-2">
 				<Label for="rule-name">Name</Label>
-				<Input
-					id="rule-name"
-					bind:value={name}
-					placeholder="e.g. High Error Rate"
-					required
-				/>
+				<Input id="rule-name" bind:value={name} placeholder="e.g. High Error Rate" required />
 			</div>
 
 			<div class="space-y-2">
 				<Label for="rule-channel">Channel</Label>
 				<Select.Root type="single" bind:value={channelId}>
 					<Select.Trigger class="w-full">
-						{channels.find((c) => c.id.toString() === channelId)?.name ||
-							'Select channel'}
+						{channels.find((c) => c.id.toString() === channelId)?.name || 'Select channel'}
 					</Select.Trigger>
 					<Select.Content>
-						{#each channels as ch}
+						{#each channels as ch, __index (__index)}
 							<Select.Item value={ch.id.toString()}>{ch.name}</Select.Item>
 						{/each}
 					</Select.Content>
@@ -422,7 +431,7 @@
 						{ruleTypeOptions.find((o) => o.value === ruleType)?.label || 'Select type'}
 					</Select.Trigger>
 					<Select.Content>
-						{#each visibleRuleTypes as option}
+						{#each visibleRuleTypes as option, __index (__index)}
 							<Select.Item value={option.value}>{option.label}</Select.Item>
 						{/each}
 					</Select.Content>
@@ -430,13 +439,17 @@
 			</div>
 
 			{#if ruleTypeDescriptions[ruleType]}
-				<Alert.Root class="bg-amber-50 border-amber-200 text-amber-900 dark:bg-amber-950/50 dark:border-amber-800 dark:text-amber-200 ">
+				<Alert.Root
+					class="border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-800 dark:bg-amber-950/50 dark:text-amber-200 "
+				>
 					<TriangleAlert class="text-amber-600 dark:text-amber-400" />
-					<Alert.Description class="text-amber-800 dark:text-amber-300">{ruleTypeDescriptions[ruleType]}</Alert.Description>
+					<Alert.Description class="text-amber-800 dark:text-amber-300"
+						>{ruleTypeDescriptions[ruleType]}</Alert.Description
+					>
 				</Alert.Root>
 			{/if}
 
-			<div class="rounded-md border p-3 space-y-3">
+			<div class="space-y-3 rounded-md border p-3">
 				<p class="text-sm font-medium text-muted-foreground">Rule Configuration</p>
 
 				{#if ruleType === 'error_rate_threshold'}
@@ -452,21 +465,11 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-min-req">Min Requests</Label>
-						<Input
-							id="cfg-min-req"
-							type="number"
-							bind:value={minRequests}
-							min="1"
-						/>
+						<Input id="cfg-min-req" type="number" bind:value={minRequests} min="1" />
 					</div>
 				{:else if ruleType === 'endpoint_p95_threshold' || ruleType === 'endpoint_p99_threshold'}
 					<div class="space-y-2">
@@ -475,21 +478,11 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-threshold-ms">Threshold (ms)</Label>
-						<Input
-							id="cfg-threshold-ms"
-							type="number"
-							bind:value={thresholdMs}
-							min="1"
-						/>
+						<Input id="cfg-threshold-ms" type="number" bind:value={thresholdMs} min="1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback-p">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback-p"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback-p" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 				{:else if ruleType === 'apdex_drop'}
 					<div class="space-y-2">
@@ -505,30 +498,16 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback-a">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback-a"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback-a" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-min-req-a">Min Requests</Label>
-						<Input
-							id="cfg-min-req-a"
-							type="number"
-							bind:value={minRequests}
-							min="1"
-						/>
+						<Input id="cfg-min-req-a" type="number" bind:value={minRequests} min="1" />
 					</div>
 				{:else if ruleType === 'metric_threshold'}
 					<div class="space-y-2">
 						<Label for="cfg-metric">Metric Name</Label>
-						<Input
-							id="cfg-metric"
-							bind:value={metricName}
-							placeholder="cpu.used_pcnt"
-						/>
+						<Input id="cfg-metric" bind:value={metricName} placeholder="cpu.used_pcnt" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-operator">Operator</Label>
@@ -537,7 +516,7 @@
 								{operatorOptions.find((o) => o.value === operator)?.label || operator}
 							</Select.Trigger>
 							<Select.Content>
-								{#each operatorOptions as option}
+								{#each operatorOptions as option, __index (__index)}
 									<Select.Item value={option.value}>{option.label}</Select.Item>
 								{/each}
 							</Select.Content>
@@ -545,22 +524,16 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-value">Threshold Value</Label>
-						<Input
-							id="cfg-value"
-							type="number"
-							bind:value={thresholdValue}
-							step="0.1"
-						/>
+						<Input id="cfg-value" type="number" bind:value={thresholdValue} step="0.1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-agg">Aggregation</Label>
 						<Select.Root type="single" bind:value={aggregation}>
 							<Select.Trigger class="w-full">
-								{aggregationOptions.find((o) => o.value === aggregation)?.label ||
-									aggregation}
+								{aggregationOptions.find((o) => o.value === aggregation)?.label || aggregation}
 							</Select.Trigger>
 							<Select.Content>
-								{#each aggregationOptions as option}
+								{#each aggregationOptions as option, __index (__index)}
 									<Select.Item value={option.value}>{option.label}</Select.Item>
 								{/each}
 							</Select.Content>
@@ -568,12 +541,7 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback-m">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback-m"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback-m" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 				{:else if ruleType === 'no_data'}
 					<div class="space-y-2">
@@ -583,7 +551,7 @@
 								{dataTypeOptions.find((o) => o.value === dataType)?.label || dataType}
 							</Select.Trigger>
 							<Select.Content>
-								{#each dataTypeOptions as option}
+								{#each dataTypeOptions as option, __index (__index)}
 									<Select.Item value={option.value}>{option.label}</Select.Item>
 								{/each}
 							</Select.Content>
@@ -591,31 +559,16 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-silence">Silence (minutes)</Label>
-						<Input
-							id="cfg-silence"
-							type="number"
-							bind:value={silenceMinutes}
-							min="1"
-						/>
+						<Input id="cfg-silence" type="number" bind:value={silenceMinutes} min="1" />
 					</div>
 				{:else if ruleType === 'error_count_threshold'}
 					<div class="space-y-2">
 						<Label for="cfg-count">Threshold Count</Label>
-						<Input
-							id="cfg-count"
-							type="number"
-							bind:value={thresholdCount}
-							min="1"
-						/>
+						<Input id="cfg-count" type="number" bind:value={thresholdCount} min="1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback-ec">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback-ec"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback-ec" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 				{:else if ruleType === 'task_duration_threshold'}
 					<div class="space-y-2">
@@ -624,21 +577,11 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-threshold-ms-t">Threshold (ms)</Label>
-						<Input
-							id="cfg-threshold-ms-t"
-							type="number"
-							bind:value={thresholdMs}
-							min="1"
-						/>
+						<Input id="cfg-threshold-ms-t" type="number" bind:value={thresholdMs} min="1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback-td">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback-td"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback-td" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 				{:else if ruleType === 'task_failure_rate'}
 					<div class="space-y-2">
@@ -657,59 +600,29 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback-tf">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback-tf"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback-tf" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-min-exec">Min Executions</Label>
-						<Input
-							id="cfg-min-exec"
-							type="number"
-							bind:value={minExecutions}
-							min="1"
-						/>
+						<Input id="cfg-min-exec" type="number" bind:value={minExecutions} min="1" />
 					</div>
 				{:else if ruleType === 'throughput_drop'}
 					<div class="space-y-2">
 						<Label for="cfg-drop">Drop (%)</Label>
-						<Input
-							id="cfg-drop"
-							type="number"
-							bind:value={dropPercent}
-							step="0.1"
-							min="0"
-						/>
+						<Input id="cfg-drop" type="number" bind:value={dropPercent} step="0.1" min="0" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback-tp">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback-tp"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback-tp" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-baseline">Baseline Window (minutes)</Label>
-						<Input
-							id="cfg-baseline"
-							type="number"
-							bind:value={baselineWindowMinutes}
-							min="1"
-						/>
+						<Input id="cfg-baseline" type="number" bind:value={baselineWindowMinutes} min="1" />
 					</div>
 				{:else if ruleType === 'endpoint_error_rate'}
 					<div class="space-y-2">
 						<Label for="cfg-endpoint-er">Endpoint</Label>
-						<Input
-							id="cfg-endpoint-er"
-							bind:value={endpoint}
-							placeholder="POST /api/checkout"
-						/>
+						<Input id="cfg-endpoint-er" bind:value={endpoint} placeholder="POST /api/checkout" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-threshold-er">Threshold (%)</Label>
@@ -723,21 +636,11 @@
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-lookback-er">Lookback (minutes)</Label>
-						<Input
-							id="cfg-lookback-er"
-							type="number"
-							bind:value={lookbackMinutes}
-							min="1"
-						/>
+						<Input id="cfg-lookback-er" type="number" bind:value={lookbackMinutes} min="1" />
 					</div>
 					<div class="space-y-2">
 						<Label for="cfg-min-req-er">Min Requests</Label>
-						<Input
-							id="cfg-min-req-er"
-							type="number"
-							bind:value={minRequests}
-							min="1"
-						/>
+						<Input id="cfg-min-req-er" type="number" bind:value={minRequests} min="1" />
 					</div>
 				{:else if ruleType === 'new_error'}
 					<div class="space-y-2">
@@ -748,25 +651,10 @@
 							placeholder="*timeout*, *context canceled*"
 						/>
 					</div>
-				{:else if ruleType === 'error_regression'}
-					<div class="flex items-center gap-2">
-						<input
-							id="cfg-include-archived"
-							type="checkbox"
-							bind:checked={includeArchived}
-							class="h-4 w-4 rounded border-border"
-						/>
-						<Label for="cfg-include-archived">Include archived exceptions</Label>
-					</div>
 				{:else if ruleType === 'impact_score_critical' || ruleType === 'impact_score_high' || ruleType === 'impact_score_medium'}
 					<div class="space-y-2">
 						<Label for="cfg-min-req-impact">Min Requests</Label>
-						<Input
-							id="cfg-min-req-impact"
-							type="number"
-							bind:value={minRequests}
-							min="1"
-						/>
+						<Input id="cfg-min-req-impact" type="number" bind:value={minRequests} min="1" />
 					</div>
 				{:else if ruleType === 'ai_trace_cost'}
 					<div class="space-y-2">
@@ -787,17 +675,35 @@
 							min="0"
 						/>
 					</div>
+				{:else if ruleType === 'ai_conversation_cost'}
+					<div class="space-y-2">
+						<Label for="cfg-conv-threshold-cost">Cost Threshold ($)</Label>
+						<Input
+							id="cfg-conv-threshold-cost"
+							type="number"
+							bind:value={conversationThresholdCost}
+							step="0.01"
+							min="0"
+						/>
+					</div>
+				{:else if ruleType === 'ai_flagged_content'}
+					<div class="space-y-2">
+						<Label for="cfg-flagged-terms">Only These Terms (optional, comma-separated)</Label>
+						<Input
+							id="cfg-flagged-terms"
+							bind:value={flaggedTermsFilter}
+							placeholder="Leave empty to fire on any flagged conversation"
+						/>
+						<p class="text-xs text-muted-foreground">
+							Custom flagged terms are managed in the project settings AI tab.
+						</p>
+					</div>
 				{/if}
 			</div>
 
 			<div class="space-y-2">
 				<Label for="rule-cooldown">Cooldown (minutes)</Label>
-				<Input
-					id="rule-cooldown"
-					type="number"
-					bind:value={cooldownMinutes}
-					min="1"
-				/>
+				<Input id="rule-cooldown" type="number" bind:value={cooldownMinutes} min="1" />
 			</div>
 
 			<div class="space-y-2">
@@ -807,21 +713,17 @@
 						{severityOptions.find((o) => o.value === severity)?.label || 'Auto (default)'}
 					</Select.Trigger>
 					<Select.Content>
-						{#each severityOptions as option}
+						{#each severityOptions as option, __index (__index)}
 							<Select.Item value={option.value}>{option.label}</Select.Item>
 						{/each}
 					</Select.Content>
 				</Select.Root>
 			</div>
-
-			{#if error}
-				<p class="text-sm text-destructive">{error}</p>
-			{/if}
 		</form>
 
 		<AlertDialog.Footer>
 			<AlertDialog.Cancel disabled={loading}>Cancel</AlertDialog.Cancel>
-			<Button onclick={handleSubmit} disabled={loading}>
+			<Button variant={isEditing ? 'default' : 'success'} onclick={handleSubmit} disabled={loading}>
 				{#if isEditing}
 					<Check class="mr-2 h-4 w-4" />
 					{#if loading}

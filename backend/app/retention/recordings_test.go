@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-func TestIsSafeRecordingsDir(t *testing.T) {
+func TestIsSafeStorageSubdir(t *testing.T) {
 	cases := []struct {
 		path string
 		safe bool
@@ -20,8 +20,8 @@ func TestIsSafeRecordingsDir(t *testing.T) {
 		{"/var/lib/traceway/recordings", true},
 	}
 	for _, c := range cases {
-		if got := isSafeRecordingsDir(c.path); got != c.safe {
-			t.Errorf("isSafeRecordingsDir(%q) = %v, want %v", c.path, got, c.safe)
+		if got := isSafeStorageSubdir(c.path); got != c.safe {
+			t.Errorf("isSafeStorageSubdir(%q) = %v, want %v", c.path, got, c.safe)
 		}
 	}
 }
@@ -43,7 +43,7 @@ func TestRunRecordingDiskCleanup_DeletesOldKeepsFresh(t *testing.T) {
 	mustChtime(t, oldFile, aged)
 	mustChtime(t, nestedOld, aged)
 
-	runRecordingDiskCleanup(dir, 30)
+	runDirAgeCleanup(dir, 30)
 
 	assertNotExists(t, oldFile)
 	assertExists(t, freshFile)
@@ -66,7 +66,7 @@ func TestRunRecordingDiskCleanup_PrunesEmptyDirsKeepsRoot(t *testing.T) {
 	mustChtime(t, emptyAfter, aged)
 	mustChtime(t, mixedOld, aged)
 
-	runRecordingDiskCleanup(dir, 30)
+	runDirAgeCleanup(dir, 30)
 
 	assertExists(t, dir)
 	assertNotExists(t, filepath.Join(dir, "project-empty"))
@@ -78,7 +78,7 @@ func TestRunRecordingDiskCleanup_NoOpOnMissingDir(t *testing.T) {
 	parent := t.TempDir()
 	missing := filepath.Join(parent, "does-not-exist")
 
-	runRecordingDiskCleanup(missing, 30)
+	runDirAgeCleanup(missing, 30)
 
 	if _, err := os.Stat(missing); !os.IsNotExist(err) {
 		t.Fatalf("expected missing dir to remain absent, got err=%v", err)
@@ -93,7 +93,7 @@ func TestRunRecordingDiskCleanup_RefusesPathThatIsAFile(t *testing.T) {
 	aged := time.Now().Add(-40 * 24 * time.Hour)
 	mustChtime(t, filePath, aged)
 
-	runRecordingDiskCleanup(filePath, 30)
+	runDirAgeCleanup(filePath, 30)
 
 	assertExists(t, filePath)
 }
@@ -110,7 +110,7 @@ func TestRunRecordingDiskCleanup_KeepsAllWhenNoneAreOld(t *testing.T) {
 		mustWriteFile(t, f, "fresh")
 	}
 
-	runRecordingDiskCleanup(dir, 30)
+	runDirAgeCleanup(dir, 30)
 
 	for _, f := range files {
 		assertExists(t, f)

@@ -1,14 +1,14 @@
 package controllers
 
 import (
+	"database/sql"
 	"github.com/tracewayapp/traceway/backend/app/cache"
 	"github.com/tracewayapp/traceway/backend/app/config"
 	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 	"github.com/tracewayapp/traceway/backend/app/services"
-	"database/sql"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -17,11 +17,13 @@ import (
 
 var PostRegistrationHooks []func(tx *sql.Tx, org *models.Organization, user *models.User) error
 
+const passwordLoginDisabledMessage = "Password login is disabled. Please use SSO to sign in."
+
 type authController struct{}
 
 func (a authController) HasOrganizations(c *gin.Context) {
 	tx := db.GetTx(c)
-	hasOrganizations, err := repositories.OrganizationRepository.HasOrganizations(tx)
+	hasOrganizations, err := transactional.OrganizationRepository.HasOrganizations(tx)
 
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
@@ -32,8 +34,8 @@ func (a authController) HasOrganizations(c *gin.Context) {
 }
 
 func (a authController) Login(c *gin.Context) {
-	if config.Config.DisablePasswordLogin == "true" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Password login is disabled. Please use SSO to sign in."})
+	if config.Config.PasswordLoginDisabled() {
+		c.JSON(http.StatusForbidden, gin.H{"error": passwordLoginDisabledMessage})
 		return
 	}
 
@@ -45,7 +47,7 @@ func (a authController) Login(c *gin.Context) {
 
 	tx := db.GetTx(c)
 
-	user, err := repositories.UserRepository.FindByEmail(tx, request.Email)
+	user, err := transactional.UserRepository.FindByEmail(tx, request.Email)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
@@ -66,13 +68,13 @@ func (a authController) Login(c *gin.Context) {
 		return
 	}
 
-	projects, err := repositories.ProjectRepository.FindAllWithBackendUrlByUserId(tx, user.Id)
+	projects, err := transactional.ProjectRepository.FindAllWithBackendUrlByUserId(tx, user.Id)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
 
-	organizations, err := repositories.OrganizationRepository.FindByUserIdWithRoles(tx, user.Id)
+	organizations, err := transactional.OrganizationRepository.FindByUserIdWithRoles(tx, user.Id)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
@@ -87,14 +89,14 @@ func (a authController) Login(c *gin.Context) {
 }
 
 func (a authController) Register(c *gin.Context) {
-	if config.Config.DisablePasswordLogin == "true" {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Password login is disabled. Please use SSO to sign in."})
+	if config.Config.PasswordLoginDisabled() {
+		c.JSON(http.StatusForbidden, gin.H{"error": passwordLoginDisabledMessage})
 		return
 	}
 
 	var request models.RegisterRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(c, err, "Invalid request body")
 		return
 	}
 
@@ -109,7 +111,7 @@ func (a authController) Register(c *gin.Context) {
 
 	// if we're not in the cloud mode only a single organization is allowed
 	if config.Config.CloudMode != "true" {
-		hasOrganizations, err := repositories.OrganizationRepository.HasOrganizations(tx)
+		hasOrganizations, err := transactional.OrganizationRepository.HasOrganizations(tx)
 
 		if err != nil {
 			c.AbortWithError(http.StatusInternalServerError, err)
@@ -122,7 +124,7 @@ func (a authController) Register(c *gin.Context) {
 		}
 	}
 
-	exists, err := repositories.UserRepository.EmailExists(tx, request.Email)
+	exists, err := transactional.UserRepository.EmailExists(tx, request.Email)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
@@ -138,19 +140,19 @@ func (a authController) Register(c *gin.Context) {
 		return
 	}
 
-	user, err := repositories.UserRepository.Create(tx, request.Email, request.Name, hashedPassword)
+	user, err := transactional.UserRepository.Create(tx, request.Email, request.Name, hashedPassword)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
 
-	org, err := repositories.OrganizationRepository.Create(tx, request.OrganizationName, request.Timezone)
+	org, err := transactional.OrganizationRepository.Create(tx, request.OrganizationName, request.Timezone)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
 
-	_, err = repositories.OrganizationRepository.AddUser(tx, org.Id, user.Id, "owner")
+	_, err = transactional.OrganizationRepository.AddUser(tx, org.Id, user.Id, "owner")
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
@@ -163,16 +165,25 @@ func (a authController) Register(c *gin.Context) {
 		}
 	}
 
-	if !validFrameworks[request.Framework] {
-		traceway.CaptureMessage("Invalid framework received during registration: " + request.Framework)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Framework must be one of: gin, fiber, chi, fasthttp, stdlib, custom, react, svelte, vuejs, jquery, react-native, hono, cloudflare, opentelemetry, symfony, flutter, android"})
+	wantsProject := request.ProjectName != "" || request.Framework != ""
+	if wantsProject && (request.ProjectName == "" || request.Framework == "") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "projectName and framework must be provided together"})
 		return
 	}
 
-	project, err := repositories.ProjectRepository.CreateWithOrganization(tx, request.ProjectName, request.Framework, org.Id)
-	if err != nil {
-		c.AbortWithError(http.StatusInternalServerError, err)
-		return
+	var project *models.Project
+	if wantsProject {
+		if !validFrameworks[request.Framework] {
+			traceway.CaptureMessage("Invalid framework received during registration: " + request.Framework)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Framework must be one of: gin, fiber, chi, fasthttp, stdlib, custom, react, svelte, vuejs, jquery, react-native, hono, cloudflare, opentelemetry, symfony, flutter, android, ios"})
+			return
+		}
+
+		project, err = transactional.ProjectRepository.CreateWithOrganization(tx, request.ProjectName, request.Framework, org.Id)
+		if err != nil {
+			c.AbortWithError(http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	token, err := services.GenerateToken(user.Id, user.Email)
@@ -181,24 +192,25 @@ func (a authController) Register(c *gin.Context) {
 		return
 	}
 
-	projects, err := repositories.ProjectRepository.FindAllWithBackendUrlByUserId(tx, user.Id)
+	projects, err := transactional.ProjectRepository.FindAllWithBackendUrlByUserId(tx, user.Id)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
 	}
 
-	// cache can get out of sync here
-	// the transaction for creating the project is not guaranteed to have
-	// finished when this is inserted into cache
-	cache.ProjectCache.AddProject(&models.Project{
-		Id:             project.Id,
-		Name:           project.Name,
-		Token:          project.Token,
-		Framework:      project.Framework,
-		OrganizationId: project.OrganizationId,
-	})
+	var projectWithUrl *models.ProjectWithBackendUrl
+	if project != nil {
+		cache.ProjectCache.AddProject(&models.Project{
+			Id:             project.Id,
+			Name:           project.Name,
+			Token:          project.Token,
+			Framework:      project.Framework,
+			OrganizationId: project.OrganizationId,
+		})
+		projectWithUrl = project.ToProjectWithBackendUrl()
+	}
 
-	organizations, err := repositories.OrganizationRepository.FindByUserIdWithRoles(tx, user.Id)
+	organizations, err := transactional.OrganizationRepository.FindByUserIdWithRoles(tx, user.Id)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, err)
 		return
@@ -207,7 +219,7 @@ func (a authController) Register(c *gin.Context) {
 	c.JSON(http.StatusCreated, &models.RegisterResponse{
 		Token:         token,
 		User:          user.ToResponse(),
-		Project:       *project.ToProjectWithBackendUrl(),
+		Project:       projectWithUrl,
 		Projects:      projects,
 		Organizations: organizations,
 	})
@@ -222,7 +234,7 @@ func (a authController) LoginBundle(c *gin.Context) {
 		return
 	}
 
-	user, err := repositories.UserRepository.FindById(tx, userId)
+	user, err := transactional.UserRepository.FindById(tx, userId)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("LoginBundle: load user: %w", err))
 		return
@@ -232,13 +244,13 @@ func (a authController) LoginBundle(c *gin.Context) {
 		return
 	}
 
-	projects, err := repositories.ProjectRepository.FindAllWithBackendUrlByUserId(tx, user.Id)
+	projects, err := transactional.ProjectRepository.FindAllWithBackendUrlByUserId(tx, user.Id)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("LoginBundle: load projects: %w", err))
 		return
 	}
 
-	organizations, err := repositories.OrganizationRepository.FindByUserIdWithRoles(tx, user.Id)
+	organizations, err := transactional.OrganizationRepository.FindByUserIdWithRoles(tx, user.Id)
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("LoginBundle: load orgs: %w", err))
 		return

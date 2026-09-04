@@ -42,7 +42,7 @@ func startRecordingDiskCleanup(ctx context.Context, days int) {
 	}
 	recordingsDir := filepath.Clean(filepath.Join(abs, recordingsSubdir))
 
-	if !isSafeRecordingsDir(recordingsDir) {
+	if !isSafeStorageSubdir(recordingsDir) {
 		traceway.CaptureException(fmt.Errorf("retention: refusing to clean shallow recordings dir %q — set STORAGE_PATH to a dedicated directory", recordingsDir))
 		return
 	}
@@ -52,7 +52,7 @@ func startRecordingDiskCleanup(ctx context.Context, days int) {
 	go func() {
 		defer traceway.Recover()
 
-		runRecordingDiskCleanup(recordingsDir, days)
+		runDirAgeCleanup(recordingsDir, days)
 
 		ticker := time.NewTicker(tickInterval)
 		defer ticker.Stop()
@@ -61,13 +61,13 @@ func startRecordingDiskCleanup(ctx context.Context, days int) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				runRecordingDiskCleanup(recordingsDir, days)
+				runDirAgeCleanup(recordingsDir, days)
 			}
 		}
 	}()
 }
 
-func isSafeRecordingsDir(path string) bool {
+func isSafeStorageSubdir(path string) bool {
 	cleaned := filepath.Clean(path)
 	if cleaned == "/" || cleaned == "." {
 		return false
@@ -77,7 +77,7 @@ func isSafeRecordingsDir(path string) bool {
 	return len(parts) >= 2
 }
 
-func runRecordingDiskCleanup(dir string, days int) {
+func runDirAgeCleanup(dir string, days int) {
 	info, err := os.Stat(dir)
 	if errors.Is(err, fs.ErrNotExist) {
 		return
@@ -87,7 +87,7 @@ func runRecordingDiskCleanup(dir string, days int) {
 		return
 	}
 	if !info.IsDir() {
-		traceway.CaptureException(fmt.Errorf("retention: recordings path %s is not a directory", dir))
+		traceway.CaptureException(fmt.Errorf("retention: cleanup path %s is not a directory", dir))
 		return
 	}
 
@@ -128,6 +128,6 @@ func runRecordingDiskCleanup(dir string, days int) {
 	}
 
 	if removed > 0 {
-		config.Logf("Recording disk cleanup removed %d file(s) older than %d day(s) under %s", removed, days, dir)
+		config.Logf("Disk cleanup removed %d file(s) older than %d day(s) under %s", removed, days, dir)
 	}
 }

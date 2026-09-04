@@ -1,16 +1,17 @@
 <script lang="ts">
+	import { getErrorMessage, getErrorStatus } from '$lib/utils/errors';
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api';
-	import { Button } from '$lib/components/ui/button';
 	import { LoadingCircle } from '$lib/components/ui/loading-circle';
 	import { ErrorDisplay } from '$lib/components/ui/error-display';
-	import { projectsState } from '$lib/state/projects.svelte';
-	import { StackTraceCard, EventCard, EventsTable, PageHeader } from '$lib/components/issues';
+	import { projectsState, isJsFramework, isJsLanguage } from '$lib/state/projects.svelte';
+	import { StackTraceCard, EventCard, EventsTable } from '$lib/components/issues';
+	import PageHeader from '$lib/components/traceway/page-header.svelte';
 	import { toast } from 'svelte-sonner';
 	import ArchiveConfirmationDialog from '$lib/components/archive-confirmation-dialog.svelte';
-	import Archive from '@lucide/svelte/icons/archive';
+	import OncallOwner from '$lib/components/traceway/oncall-owner.svelte';
 	import type {
 		ExceptionGroup,
 		ExceptionOccurrence,
@@ -35,8 +36,22 @@
 	const exceptionHash = $derived(page.params.exceptionHash ?? '');
 	const latestOccurrence = $derived(occurrences[0]);
 	const isMessage = $derived(latestOccurrence?.isMessage ?? false);
+	const isJavaScript = $derived(
+		(projectsState.currentProject?.framework
+			? isJsFramework(projectsState.currentProject.framework)
+			: false) || isJsLanguage(latestOccurrence?.attributes?.['telemetry.sdk.language'])
+	);
+	const isFlutter = $derived(projectsState.currentProject?.framework === 'flutter');
+	const isIOS = $derived(
+		projectsState.currentProject?.framework === 'ios' ||
+			['ios', 'swift'].includes(
+				(latestOccurrence?.attributes?.['telemetry.sdk.language'] ?? '').toLowerCase()
+			)
+	);
 	const hasMoreOccurrences = $derived(total > 10);
-	const firstLineOfStackTrace = $derived(latestOccurrence?.stackTrace.split('\n')[0] || 'Exception');
+	const firstLineOfStackTrace = $derived(
+		latestOccurrence?.stackTrace.split('\n')[0] || 'Exception'
+	);
 
 	async function loadData() {
 		loading = true;
@@ -92,29 +107,29 @@
 					console.warn('Could not load linked trace:', txError);
 				}
 			}
-		} catch (e: any) {
+		} catch (e) {
 			console.error(e);
-			if (e.status === 404) {
+			if (getErrorStatus(e) === 404) {
 				notFound = true;
 			} else {
-				error = e.message || 'Failed to load exception details';
+				error = getErrorMessage(e) || 'Failed to load exception details';
 			}
 		} finally {
 			loading = false;
 		}
 	}
 
-	async function archiveIssue() {
+	async function archiveIssue(resolvePages: boolean) {
 		archiving = true;
 		try {
 			await api.post(
 				'/exception-stack-traces/archive',
-				{ hashes: [exceptionHash] },
+				{ hashes: [exceptionHash], resolvePages },
 				{ projectId: projectsState.currentProjectId ?? undefined }
 			);
-			toast.success('Successfully archived the Issue', { position: 'top-center' });
-			goto('/issues');
-		} catch (e: any) {
+			toast.success('Successfully archived the Issue');
+			goto(resolve('/issues'));
+		} catch (e) {
 			console.error('Archive failed:', e);
 			throw e;
 		} finally {
@@ -128,13 +143,15 @@
 </script>
 
 <div class="space-y-6">
-	<div class="flex items-start justify-between gap-4">
-		<PageHeader
-			title={firstLineOfStackTrace}
-			subtitle="Exception Hash: {exceptionHash}"
-			onBack={createSmartBackHandler({ fallbackPath: resolve('/issues') })}
-		/>
-	</div>
+	<PageHeader
+		title={firstLineOfStackTrace}
+		subtitle="Exception Hash: {exceptionHash}"
+		onBack={createSmartBackHandler({ fallbackPath: resolve('/issues') })}
+	>
+		{#snippet actions()}
+			<OncallOwner />
+		{/snippet}
+	</PageHeader>
 
 	{#if loading && !group}
 		<div class="flex items-center justify-center py-20">
@@ -163,6 +180,9 @@
 		<StackTraceCard
 			stackTrace={latestOccurrence?.stackTrace ?? group.stackTrace}
 			{isMessage}
+			{isJavaScript}
+			{isFlutter}
+			{isIOS}
 			firstSeen={group.firstSeen}
 			lastSeen={group.lastSeen}
 			totalCount={group.count}
@@ -195,5 +215,6 @@
 	open={showArchiveDialog}
 	onOpenChange={(open) => (showArchiveDialog = open)}
 	count={1}
+	hashes={[exceptionHash]}
 	onConfirm={archiveIssue}
 />

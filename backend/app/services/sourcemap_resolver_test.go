@@ -1,129 +1,86 @@
 package services
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"os"
+	"strings"
+	"testing"
 
-func TestExtractFunctionName(t *testing.T) {
-	tests := []struct {
-		name     string
-		content  string
-		line     int
-		expected string
-	}{
-		{
-			name: "arrow function above throw",
-			content: `import React from 'react';
-const handleEventError = () => {
-  try {
-    log("Triggering error...")
-    throw new Error("Test error")
-  } catch (e) {
-    throw e
-  }
-}`,
-			line:     5,
-			expected: "handleEventError",
-		},
-		{
-			name: "regular function declaration",
-			content: `function processData(input) {
-  transform(input)
-  return input
-}`,
-			line:     3,
-			expected: "processData",
-		},
-		{
-			name: "export function",
-			content: `export function handleError(err) {
-  console.error(err)
-  reportError(err)
-}`,
-			line:     3,
-			expected: "handleError",
-		},
-		{
-			name: "export default function",
-			content: `export default function App() {
-  return <div>Hello</div>
-}`,
-			line:     2,
-			expected: "App",
-		},
-		{
-			name: "class method",
-			content: `class MyComponent {
-  handleClick(event) {
-    event.preventDefault()
-    this.setState({ clicked: true })
-  }
-}`,
-			line:     4,
-			expected: "handleClick",
-		},
-		{
-			name: "async method",
-			content: `class ApiClient {
-  async fetchData(url) {
-    await fetch(url)
-    return null
-  }
-}`,
-			line:     4,
-			expected: "fetchData",
-		},
-		{
-			name: "skips function calls",
-			content: `const fn = () => {
-  log("hello")
-  doSomething()
-  throw new Error("fail")
-}`,
-			line:     4,
-			expected: "fn",
-		},
-		{
-			name: "skips control flow keywords",
-			content: `function foo() {
-  if (x) {
-    doSomething()
-  }
-}`,
-			line:     3,
-			expected: "foo",
-		},
-		{
-			name: "returns empty when no function found",
-			content: `x = 1
-y = 2
-z = x + y`,
-			line:     3,
-			expected: "",
-		},
-		{
-			name: "var declaration with function expression",
-			content: `var onSubmit = function(e) {
-  e.preventDefault()
-  submit(data)
-}`,
-			line:     3,
-			expected: "onSubmit",
-		},
-		{
-			name: "let declaration with arrow",
-			content: `let compute = (a, b) => {
-  return a + b
-}`,
-			line:     2,
-			expected: "compute",
-		},
+	"github.com/tracewayapp/traceway/backend/app/storage"
+
+	"github.com/google/uuid"
+)
+
+func seedFixture(t *testing.T, cs *countingStorage, key, fixturePath string) {
+	t.Helper()
+	data, err := os.ReadFile(fixturePath)
+	if err != nil {
+		t.Fatal(err)
 	}
+	cs.data[key] = data
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := extractFunctionName(tt.content, tt.line)
-			if got != tt.expected {
-				t.Errorf("extractFunctionName() = %q, want %q", got, tt.expected)
-			}
-		})
+func TestResolveStackTraceWithBundle(t *testing.T) {
+	InitSourceMapCache(100, 64<<20)
+	prev := storage.Store
+	defer func() { storage.Store = prev }()
+	cs := &countingStorage{reads: map[string]int{}, data: map[string][]byte{}}
+	storage.Store = cs
+
+	projectId := uuid.New()
+	prefix := fmt.Sprintf("sourcemaps/%s/", projectId)
+	seedFixture(t, cs, prefix+"minified.js.map", "testdata/sourcemapcache/simple/minified.js.map")
+	seedFixture(t, cs, prefix+"minified.js", "testdata/sourcemapcache/simple/minified.js")
+
+	input := "Error: boom\nanonymous()\n    minified.js:1:11"
+	lines := strings.Split(ResolveStackTrace(context.Background(), projectId, input, nil), "\n")
+
+	if got, want := lines[2], "    tests/fixtures/simple/original.js:2:10"; got != want {
+		t.Errorf("location: got %q, want %q", got, want)
+	}
+	if got, want := lines[1], "abcd()"; got != want {
+		t.Errorf("function name (from bundle): got %q, want %q", got, want)
+	}
+}
+
+func TestResolveStackTraceLocationOnlyWithoutBundle(t *testing.T) {
+	InitSourceMapCache(100, 64<<20)
+	prev := storage.Store
+	defer func() { storage.Store = prev }()
+	cs := &countingStorage{reads: map[string]int{}, data: map[string][]byte{}}
+	storage.Store = cs
+
+	projectId := uuid.New()
+	prefix := fmt.Sprintf("sourcemaps/%s/", projectId)
+	seedFixture(t, cs, prefix+"preact-missing-source-contents.module.js.map", "testdata/sourcemapcache/preact-missing-source-contents.module.js.map")
+
+	input := "Error: boom\nanonymous()\n    preact-missing-source-contents.module.js:1:133"
+	lines := strings.Split(ResolveStackTrace(context.Background(), projectId, input, nil), "\n")
+
+	if got, want := lines[2], "    ../src/util.js:12:23"; got != want {
+		t.Errorf("location: got %q, want %q", got, want)
+	}
+	if got, want := lines[1], "anonymous()"; got != want {
+		t.Errorf("function name should stay unresolved without a bundle: got %q, want %q", got, want)
+	}
+}
+
+func TestResolveStackTraceNegativeCacheAvoidsRepeatReads(t *testing.T) {
+	InitSourceMapCache(100, 64<<20)
+	prev := storage.Store
+	defer func() { storage.Store = prev }()
+	cs := &countingStorage{reads: map[string]int{}, data: map[string][]byte{}}
+	storage.Store = cs
+
+	projectId := uuid.New()
+	input := "Error: boom\n    foo()\n    missing.js:1:5"
+
+	_ = ResolveStackTrace(context.Background(), projectId, input, nil)
+	_ = ResolveStackTrace(context.Background(), projectId, input, nil)
+
+	mapKey := fmt.Sprintf("sourcemaps/%s/missing.js.map", projectId)
+	if got := cs.reads[mapKey]; got != 1 {
+		t.Errorf("negative cache should prevent repeat reads, got %d reads", got)
 	}
 }

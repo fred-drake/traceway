@@ -46,6 +46,21 @@ the `--scenario` flag.
   5 s). Results land in `benchmarks/results-probe/`. Answers "how big
   can the table grow before the dashboard read on this endpoint cliffs?"
 
+  Between the fill and the probes sits a **digestion gate**
+  (`--max-digest-wait`, default 10 m): the loadgen polls `/api/health/deep`
+  until the engine's db+WAL file sizes are stable across two consecutive
+  polls. DuckDB checkpoints its WAL asynchronously after ingest stops, and
+  on a small tier that checkpoint can outlast the settle window — probing
+  through it produces uniform timeouts on sub-millisecond queries
+  (a wedged engine, not query cost; observed as a nondeterministic
+  logs/spans "cliff" on ccx13 before the gate existed). The wait is
+  recorded per fill level as `digestSeconds` (with `digestTimedOut` when
+  the cap expired), so "how long until the box answers again after a
+  burst" is itself a published number. Backends without engine gauges
+  (SQLite, ClickHouse) pass the gate on the first poll, and the probes
+  use a client without the shared 30 s timeout so `--read-threshold-ms`
+  above 29 s actually takes effect.
+
 The two scenarios write to sibling folders so one never overwrites the
 other. Each folder is wiped on each dispatch of its scenario.
 
@@ -154,9 +169,20 @@ Per matrix entry (one tier × one mode × one signal):
      Measures the SUT under "thousands of small batches/sec from a real
      SDK fleet" load, which stresses the HTTP/auth/decode/queue path more
      than the raw insert path Phase 2 measures.
-6. A step "fails" when **either**:
+6. A step "fails" when **any** of:
    - combined error rate (HTTP failures + OTLP `PartialSuccess` rejected items)
      exceeds `--ingest-err-threshold` (default 5%), **or**
+   - the SUT silently dropped rows mid-step: the loadgen polls
+     `/api/health/deep` before and after each step and any positive
+     `droppedRowsTotal` delta fails the step, since throughput built on
+     acked-but-discarded items is not real ingested throughput (DuckDB drops
+     rows its appender rejects instead of erroring the request; SQLite and
+     ClickHouse report 0 here). The end-of-step snapshot lands in the step
+     JSON as `sutIngest`, including DuckDB db/WAL file sizes and engine
+     memory, so a latency cliff can be correlated with WAL growth or memory
+     pressure after the fact. Read-probe fills record the same counter as
+     `droppedRows` per fill level (the true table size is `rowsIngested`
+     minus `droppedRows`), **or**
    - the *achieved* request rate falls below `--soft-cliff-ratio` × target rate
      (default 70%) — meaning the workers can't keep up with the limiter, the
      SUT has cliffed on latency, and we'd be erroring out one step later anyway.
@@ -305,6 +331,16 @@ historical folders (`benchmarks/results/2026-05-15/` etc.) from before
 this layout change are kept in git for reference but are no longer written
 to.
 
+### Metrics store benchmark
+
+`.github/workflows/benchmark-metricsdb.yml`, `workflow_dispatch` only. It
+provisions one dedicated-core Hetzner box per database (VictoriaMetrics,
+ClickHouse, DuckDB, Firebolt) and tears it down afterwards; a full run of the
+default four on ccx33 is about EUR 2.50. It uses the same two secrets as the
+hardware benchmark. The `benchmarks/metricsdb` tree it builds and runs is not
+on `main` yet (`.gitignore` excludes it while it lives on a branch), so a
+dispatch fails at the build job until that tree lands.
+
 ## Running against managed ClickHouse
 
 Setting `modes=managed-ch` in the workflow dispatch (or `--mode managed-ch`
@@ -348,6 +384,84 @@ they're missing.
   ingest path. Read-probe surfaces the cluster's read scaling, which is what
   you actually buy from a managed offering.
 
+## Symbolicator benchmarks
+
+Two additional workflows benchmark the JS symbolicator. They answer different
+questions and run on different infrastructure:
+
+| Workflow | What it measures | Where it runs | Cost |
+|---|---|---|---|
+| `benchmark-symbolicator` | Bundle parser throughput: goja vs oxc (`go test -bench`) | GitHub runner | free, ~10 min |
+| `benchmark-symbolicator-cache` | Resolver cache architecture: in-memory LRU vs mmap disk cache | One Hetzner box | under 1 EUR, ~2 h |
+
+Both are `workflow_dispatch` only. The workflow file must exist on `main` to be
+dispatchable; select the feature branch in the run dropdown to execute that
+branch's scripts and code.
+
+### Parser benchmark
+
+`scripts/benchmark-symbolicator.sh` (repo root `scripts/`, not this folder)
+builds the oxc Rust shim, runs the symbolicator test suite as a gate, then runs
+`BenchmarkBundleParsers` over the bundler fixtures (simple, inlining, webpack,
+metro, preact) plus 1MB/5MB synthetic bundles, with both parsers. Results land
+in the job step summary. Expected shape: oxc 2-4.5x faster than goja with
+roughly 99% fewer allocations; `BenchmarkOpenTW` in the hundreds of
+nanoseconds.
+
+### Cache benchmark (cachebench)
+
+> With a corpus of **N** uploaded bundles (more than RAM can hold), a hot set
+> of ~30 active exceptions, and **R**% of lookups hitting the long tail, which
+> resolver cache is cheaper: parsed-in-memory or mmap'd `.tw` files on disk,
+> and at what corpus size does one break?
+
+The harness is `backend/tools/cachebench` (it imports backend internals, so it
+lives in the backend module): `generate` writes a corpus of synthetic
+bundle + VLQ source map + `.tw` triples, `run` executes one cell
+(mode x entries x cold-ratio) in a fresh process and emits a JSON row with
+throughput (rps), weighted p50/p95/p99 latency, peak RSS sampled at 200ms, GC
+totals, and cache internals (hits, builds, disk hits, store hits, evictions),
+`table` merges the rows into a markdown summary that marks the crossover
+corpus size and any OOM break point.
+
+Run it three ways:
+
+```bash
+# Locally, no Hetzner (small corpus; RSS reads 0 on macOS, Linux is the real measurement)
+./benchmarks/scripts/cachebench-local.sh
+
+# From a laptop against Hetzner (same env vars as the hardware benchmark)
+export HCLOUD_TOKEN=... BENCHMARK_SSH_KEY=~/.ssh/benchmark-key
+SMOKE=1 ./benchmarks/scripts/cachebench-entry.sh   # ~5 min pipeline check
+./benchmarks/scripts/cachebench-entry.sh           # full sweep
+
+# From GitHub Actions: dispatch benchmark-symbolicator-cache, smoke=true first
+```
+
+Defaults: ccx13 (2 vCPU / 8 GB), corpus 1000 to 12000 bundles (~1 MB resolver
+each against a 5.6 GB bounded memory budget, 70% of RAM), cold ratios
+0 / 0.05 / 0.25, plus an unbounded in-memory variant per cell to find the OOM
+break point. Each cell gets a wiped tw-cache and dropped page caches. A cell
+killed by the OOM killer is recorded as `BREAK (OOM)` instead of failing the
+sweep; ssh drops and timeouts are recorded as `ERROR`/`TIMEOUT` so they cannot
+masquerade as cache conclusions.
+
+What to expect in the summary table (one section per cold ratio):
+
+- **Cold 0%:** memory wins or ties every row; with only the hot set in play
+  nothing ever misses. Baseline sanity.
+- **Cold 5% / 25%:** memory wins while the corpus fits its budget, then
+  degrades once it does not (every cold lookup pulls the `.tw` artifact from
+  storage into the heap, churning the LRU and the GC) while disk holds sub-ms
+  p99 via mmap re-opens. The table prints the crossover row.
+- **memory-unbounded:** RSS climbs with corpus size until `BREAK (OOM)`,
+  producing the "file-based is the only option beyond here" line. Disk RSS
+  stays flat (only hot pages resident).
+
+Results are not committed back to the repo: every dispatch uploads
+`benchmarks/results-cachebench/` (per-cell JSON plus `summary.md`) as a run
+artifact, and the summary table is rendered in the job step summary.
+
 ## Layout
 
 ```
@@ -378,9 +492,13 @@ benchmarks/
     loadgen-bootstrap.sh         # Cross-compiles + runs loadgen
     seed-project.sh              # /api/register -> JWT + project token JSON
     chart.py                     # matplotlib renderer (throughput + read-probe charts)
-    _ssh.sh                      # Shared ssh/rsync helpers
+    _ssh.sh                      # Shared ssh/rsync helpers + retry_eof
+    cachebench-local.sh          # Symbolicator cache sweep on this machine
+    cachebench-entry.sh          # Symbolicator cache sweep on one Hetzner box
+    _cachebench.sh               # Shared matrix/stub helpers for the two above
   results-throughput/            # Committed throughput results (wiped per dispatch)
   results-probe/                 # Committed read-probe results (wiped per dispatch)
+  results-cachebench/            # Symbolicator cache results; CI uploads these as a run artifact, never committed
   results/                       # Historical dated folders (not written to anymore)
   charts.md                      # Reading guide for every chart chart.py emits
 ```

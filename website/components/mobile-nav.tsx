@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Github, Menu } from "lucide-react";
-import type { LucideIcon } from "lucide-react";
+import { Menu } from "lucide-react";
+import { GITHUB_URL, DISCORD_URL } from "@/lib/links";
 import {
   Sheet,
   SheetContent,
@@ -11,15 +11,20 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { Eyebrow } from "@/components/eyebrow";
-import { cn } from "@/lib/utils";
 
 type NavItem = {
   title: string;
-  description: string;
   href: string;
-  icon: LucideIcon;
 };
+
+const SECONDARY: (NavItem & { external?: boolean })[] = [
+  { title: "Cloud", href: "/cloud" },
+  { title: "Blog", href: "/blog" },
+  { title: "Releases", href: "/releases" },
+  { title: "Docs", href: "https://docs.tracewayapp.com", external: true },
+  { title: "GitHub", href: GITHUB_URL, external: true },
+  { title: "Discord", href: DISCORD_URL, external: true },
+];
 
 export function MobileNav({
   pillars,
@@ -49,61 +54,31 @@ export function MobileNav({
           <SheetDescription className="sr-only">Traceway product navigation</SheetDescription>
 
           <div className="px-6 pt-16 pb-6 overflow-y-auto flex-1">
-            <Eyebrow className="block mb-3">Observability pillars</Eyebrow>
-            <div className="flex flex-col">
-              {pillars.map((p) => (
-                <MobileLink key={p.href} item={p} onClick={() => setOpen(false)} />
-              ))}
-            </div>
-
-            <Eyebrow className="block mt-8 mb-3">Specialized</Eyebrow>
-            <div className="flex flex-col">
-              {specialized.map((p) => (
-                <MobileLink key={p.href} item={p} onClick={() => setOpen(false)} />
-              ))}
+            <NavSection
+              eyebrow="Platform"
+              items={pillars}
+              onNavigate={() => setOpen(false)}
+            />
+            <div className="mt-8">
+              <NavSection
+                eyebrow="Specialized"
+                items={specialized}
+                onNavigate={() => setOpen(false)}
+              />
             </div>
 
             <div
-              className="mt-8 pt-6 flex flex-col gap-1"
+              className="mt-8 pt-6 flex flex-col"
               style={{ borderTop: "1px solid var(--hair)" }}
             >
-              <Link
-                href="/cloud"
-                onClick={() => setOpen(false)}
-                className="py-3 text-[16px] font-medium text-[color:var(--fg-0)] hover:text-[color:var(--a2)]"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                Cloud
-              </Link>
-              <Link
-                href="/blog"
-                onClick={() => setOpen(false)}
-                className="py-3 text-[16px] font-medium text-[color:var(--fg-0)] hover:text-[color:var(--a2)]"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                Blog
-              </Link>
-              <Link
-                href="https://docs.tracewayapp.com"
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => setOpen(false)}
-                className="py-3 text-[16px] font-medium text-[color:var(--fg-0)] hover:text-[color:var(--a2)]"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                Docs
-              </Link>
-              <Link
-                href="https://github.com/tracewayapp/traceway"
-                target="_blank"
-                rel="noopener noreferrer"
-                onClick={() => setOpen(false)}
-                className="py-3 text-[16px] font-medium text-[color:var(--fg-0)] hover:text-[color:var(--a2)] inline-flex items-center gap-2"
-                style={{ fontFamily: "var(--font-display)" }}
-              >
-                GitHub
-                <Github className="h-4 w-4" />
-              </Link>
+              {SECONDARY.map((item) => (
+                <MobileLink
+                  key={item.href}
+                  item={item}
+                  external={item.external}
+                  onClick={() => setOpen(false)}
+                />
+              ))}
             </div>
           </div>
 
@@ -132,37 +107,50 @@ export function MobileNav({
   );
 }
 
-function MobileLink({ item, onClick }: { item: NavItem; onClick?: () => void }) {
-  const Icon = item.icon;
+function NavSection({
+  eyebrow,
+  items,
+  onNavigate,
+}: {
+  eyebrow: string;
+  items: NavItem[];
+  onNavigate?: () => void;
+}) {
+  return (
+    <div>
+      <div
+        className="text-[13.5px] font-medium uppercase tracking-[0.16em]"
+        style={{ fontFamily: "var(--font-mono)", color: "var(--fg-3)" }}
+      >
+        {eyebrow}
+      </div>
+      <div className="mt-3 flex flex-col">
+        {items.map((item) => (
+          <MobileLink key={item.href} item={item} onClick={onNavigate} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function MobileLink({
+  item,
+  external,
+  onClick,
+}: {
+  item: NavItem;
+  external?: boolean;
+  onClick?: () => void;
+}) {
   return (
     <Link
       href={item.href}
       onClick={onClick}
-      className={cn(
-        "grid grid-cols-[32px_1fr] gap-3 items-start py-3 -mx-2 px-2 rounded-md transition-colors hover:bg-[color:var(--ink-2)]"
-      )}
+      {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+      className="-mx-2 block rounded-md px-2 py-[9px] text-[15px] font-medium transition-colors text-[color:var(--fg-1)] hover:text-[color:var(--fg-0)] hover:bg-[color:rgba(255,255,255,0.04)]"
+      style={{ fontFamily: "var(--font-body)", letterSpacing: "-0.01em" }}
     >
-      <div
-        className="h-8 w-8 rounded-md grid place-items-center"
-        style={{
-          background: "rgba(255,255,255,0.04)",
-          border: "1px solid var(--hair)",
-          color: "var(--a2)",
-        }}
-      >
-        <Icon className="h-4 w-4" />
-      </div>
-      <div>
-        <div
-          className="text-[15px] font-medium leading-tight"
-          style={{ fontFamily: "var(--font-display)", color: "var(--fg-0)" }}
-        >
-          {item.title}
-        </div>
-        <div className="text-[12px] mt-0.5 leading-snug" style={{ color: "var(--fg-3)" }}>
-          {item.description}
-        </div>
-      </div>
+      {item.title}
     </Link>
   );
 }

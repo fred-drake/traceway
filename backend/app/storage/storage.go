@@ -1,14 +1,18 @@
 package storage
 
 import (
-	"github.com/tracewayapp/traceway/backend/app/config"
 	"context"
+	"errors"
 	"fmt"
+	"github.com/tracewayapp/traceway/backend/app/config"
 )
+
+var ErrNotFound = errors.New("storage: object not found")
 
 type Storage interface {
 	Write(ctx context.Context, key string, data []byte) error
 	Read(ctx context.Context, key string) ([]byte, error)
+	Delete(ctx context.Context, key string) error
 }
 
 var Store Storage

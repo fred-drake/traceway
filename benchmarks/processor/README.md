@@ -1,0 +1,201 @@
+# benchmarks/processor
+
+Head-to-head benchmark of the Traceway symbolicator processor against Honeycomb's
+reference processors (the `sourcemapprocessor` for JS and the `dsymprocessor` for
+iOS), measuring sustained symbolication throughput and resident memory while
+ramping load to the breaking point.
+
+## Topology
+
+```
+loadgen (Go) ----OTLP/HTTP----> collector under test ----OTLP/HTTP----> drain (Rust)
+   |                            (one symbolicator,                        |
+   |                             file store, no batch,                    |
+   |                             sync export)                             |
+   +---- ramps concurrency      RSS sampled every 1s        verifies the stacktrace
+         until saturation                                   was actually symbolicated
+```
+
+The drain is a Rust server that gunzips each export request, scans for the
+original-source marker (`../src/inventory.js`) and the minified marker (`.mjs:1:`),
+and counts symbolicated vs unsymbolicated requests. It does no protobuf parsing,
+so it sustains far more load than either collector can produce.
+
+The export path is synchronous (no sending queue, no retry, no batch processor),
+so one accepted loadgen request equals one fully symbolicated export delivered to
+the drain. Loadgen ok-rate times spans-per-request is the end-to-end
+stacktraces/sec; the drain's symbolicated percentage is the correctness check.
+
+## Implementations
+
+| impl | binary | parser | cache |
+|------|--------|--------|-------|
+| `honeycomb` | otelcol-bench-honeycomb | symbolic (cgo) | RAM LRU, entry-count bound |
+| `traceway-oxc-mem` | otelcol-bench-traceway | oxc | in-memory resolvers only |
+| `traceway-oxc-disk` | otelcol-bench-traceway | oxc | mmap'd `.tw` disk tier |
+| `traceway-goja-mem` | otelcol-bench-traceway | goja | in-memory resolvers only |
+| `traceway-goja-disk` | otelcol-bench-traceway | goja | mmap'd `.tw` disk tier |
+| `traceway-dart-mem` | otelcol-bench-traceway | DWARF flatten | in-memory `.tw` only |
+| `traceway-dart-disk` | otelcol-bench-traceway | DWARF flatten | mmap'd `.tw` disk tier |
+| `traceway-ios-mem` | otelcol-bench-traceway | DWARF flatten | in-memory `.tw` only |
+| `traceway-ios-disk` | otelcol-bench-traceway | DWARF flatten | mmap'd `.tw` disk tier |
+| `honeycomb-ios` | otelcol-bench-honeycomb | symbolic (cgo) | RAM LRU, entry-count bound |
+| `traceway-android-mem` | otelcol-bench-traceway | R8 retrace | in-memory mapping only |
+| `traceway-android-disk` | otelcol-bench-traceway | R8 retrace | mmap'd `.tw` disk tier |
+| `honeycomb-android` | otelcol-bench-honeycomb | symbolic (cgo) | RAM LRU, entry-count bound |
+
+One traceway binary (built with `-tags oxc`) serves all variants; language
+(JS source maps vs. Dart symbols), parser, and cache mode are runtime config.
+The processor auto-routes a non-symbolic Dart AOT trace to its Dart path; on a
+cache miss it flattens the build's `.symbols` DWARF to a `.tw` (the analog of the
+JS map compile). There is no Honeycomb Dart comparison — Honeycomb's processor is
+JS-only.
+
+## Language
+
+`benchmark-processor` takes a `language` input: `js` (the 5 JS impls incl.
+Honeycomb), `dart` (the two `traceway-dart-*` impls), `ios` (the two
+`traceway-ios-*` impls), `android` (`honeycomb-android` + the two
+`traceway-android-*` impls), or `both` (js+dart). Locally, just list the impls in
+`IMPLS`. The Dart corpus replicates a committed seed
+(`seeds/dart/app.debug.elf`, a real pure-Dart AOT `.symbols` ELF + its trace)
+under N synthetic build-ids — hardlinked, so N builds cost ~one inode — so the
+churn/oom scenarios exercise the cache the same way the JS corpus does. The
+drain's symbolicated check uses Dart markers (`crash.dart` resolved vs.
+`_kDart…SnapshotInstructions` unresolved) selected automatically per impl.
+
+The traceway iOS impls work the same way: a committed dSYM seed
+(`seeds/ios/app.dsym`) hardlinked under N synthetic build UUIDs as `<uuid>.dsym`
+(one inode for N builds), with the trace's per-frame UUID substituted per build.
+The traceway processor auto-routes the non-symbolic iOS trace, reads the dSYM by
+UUID, and flattens its DWARF to a `.tw` on a cache miss (the dSYM analog of the
+Dart `.symbols` flatten).
+
+`honeycomb-ios` runs the same seed against Honeycomb's `dsymprocessor`. Two things
+differ from the traceway iOS path. Honeycomb is logs-only, so loadgen sends OTLP
+logs (not traces). And Honeycomb keys its symcache by the dSYM's embedded
+`LC_UUID`, so the corpus cannot hardlink one inode: corpusgen patches the
+`LC_UUID` per build and writes a real `<UUID>.dSYM/Contents/Resources/DWARF/<binary>`
+bundle. The trace is the Apple-style frame format Honeycomb parses
+(`<idx> <bin> 0x<addr> <UUID> + <offset>`). Traceway's own OTel processor accepts
+that exact Honeycomb frame format too (`ios.ParseHoneycombTrace`, routed for both
+traces and logs), so the same input shape resolves on both engines. Drain markers:
+`sample.c` resolved vs. `sample+0x` unresolved.
+
+The Android impls compare R8/ProGuard retrace head-to-head. A committed
+`mapping.txt` seed (`seeds/android/mapping.txt`, the `r8-app` fixture) is written
+under N synthetic ProGuard UUIDs as `<uuid>.txt`, hardlinked when unpadded so N
+builds cost one inode. Both engines key the mapping by UUID and read the identical
+flat `<STORE_PATH>/<uuid>.txt` store, so a single corpus serves both (no per-engine
+layout split, unlike iOS). Honeycomb's `proguard_symbolicator` is logs-only, so all
+three Android impls send OTLP logs carrying a `app.debug.proguard_uuid` resource
+attribute and an obfuscated `exception.stacktrace`; Traceway's processor
+auto-routes the R8 trace via `telemetry.sdk.language=android`. Drain markers:
+`.kt:` resolved vs. `SourceFile:` unresolved.
+
+## Scenarios
+
+- `hot`: one bundle, always cache-warm. Pure resolve throughput ramp.
+- `churn`: 512 bundles (default) against a 128-entry resolver cache.
+  Honeycomb re-parses through Sentry symbolic on every eviction; Traceway disk
+  variants re-open compiled `.tw` files. The goja-vs-oxc choice matters here,
+  since the parser only runs on cache misses.
+- `oom`: 4096 bundles (default) with 1MB bundle padding, 1MB of
+  sourcesContent padding, AND 1MB of synthetic VLQ mappings per map (so
+  traceway's token table grows too and the corpus is realistic, not rigged), cache entry limit raised to corpus size,
+  fixed 32-connection load until the corpus is fully resident or the collector
+  dies. Honeycomb retains the raw map JSON plus the minified bundle on the C
+  heap per entry, so RSS grows with corpus bytes. Traceway discards bundles and
+  sourcesContent after compiling the compact `.tw` token table; the mem
+  variants keep resolvers on the Go heap, the disk variants only mmap handles.
+  The oom run defaults to a small SUT (ccx13, 8 GB) so the breaking point
+  arrives quickly.
+
+For `ios` and `honeycomb-ios` there is no padding lever (a dSYM is fixed-size and
+the engine holds a parsed symbol cache, not the raw artifact), so `oom` is instead
+a bounded-cache eviction soak: `OOM_ENTRIES` distinct build UUIDs cycle through a
+small `OOM_CACHE` (128 by default, well under the corpus) under sustained load on
+the small SUT. That is where per-dSYM cost shows up. Honeycomb's `symbolic` archive
+is heavyweight and its memory grows under sustained eviction (reaching multiple GB
+on a long run), so the small SUT eventually tips over; Traceway re-opens its compact
+`.tw` and stays flat. Android `oom` caps the cache at `OOM_CACHE` (128 by default)
+like iOS, an eviction soak, but pads each `mapping.txt` to MB scale via
+`OOM_MAP_PAD_KB` (the synthetic class blocks never collide with the seed's frames,
+so retrace output is unchanged). `hot` and `churn` are unchanged across languages.
+
+Corpus entries are the real minified node-app bundle padded with `--pad-kb`
+of valid JS (default 256 KB) so scope-analysis parse cost is realistic. The
+sourcemap stays valid because frames sit on line 1 before the padding.
+
+## Memory methodology
+
+RSS is sampled once per second from outside the process (`rss.csv` per run).
+Go heap numbers would be misleading here: Honeycomb's parsed maps live on the
+C heap inside symbolic (invisible to Go), and Traceway's mmap'd `.tw` pages
+are kernel-reclaimable (inflate RSS but are evictable). Compare the full RSS
+timeline, not a single number.
+
+## Run locally
+
+```
+./run-local.sh
+IMPLS="traceway-oxc-mem traceway-goja-mem honeycomb" SCENARIOS=churn CONNECTIONS=4,16,64 ./run-local.sh
+IMPLS="traceway-dart-mem traceway-dart-disk" SCENARIOS="hot churn" ./run-local.sh   # Dart
+IMPLS="honeycomb-ios traceway-ios-mem traceway-ios-disk" SCENARIOS="hot churn" ./run-local.sh   # iOS head-to-head
+IMPLS="honeycomb-android traceway-android-mem traceway-android-disk" SCENARIOS="hot churn" ./run-local.sh   # Android R8 head-to-head
+```
+
+Run one impl at a time locally if you hit `connect: can't assign requested
+address`: a fast Android run can churn enough collector-to-drain connections to
+exhaust the host's ephemeral ports. Hetzner runs (separate boxes) are unaffected.
+
+Needs go, cargo, node, jq. Builds both collectors (the Traceway one with
+`-tags oxc` after `scripts/build-oxc-shim.sh`), drain, loadgen, corpusgen,
+then runs the matrix on localhost and prints a summary table. Results land
+in `results/<impl>-<scenario>/` as `loadgen.json`, `drain.json`, `rss.csv`,
+`collector.log`.
+
+## Run on Hetzner
+
+```
+export HCLOUD_TOKEN=...
+./run-hetzner.sh traceway-oxc
+./run-hetzner.sh honeycomb
+```
+
+Provisions two dedicated-vCPU servers per invocation (SUT default ccx33,
+loadgen+drain box default ccx23, same location), pushes prebuilt linux
+artifacts from `artifacts/`, runs the scenarios, pulls results, and deletes
+the servers on exit. The loadgen box hosts the drain so the SUT runs nothing
+but the collector.
+
+## GitHub Action
+
+`benchmark-processor` (workflow_dispatch) builds all artifacts on the runner,
+then runs the impls as parallel matrix entries, each on its own Hetzner server
+pair. Needs the `HCLOUD_TOKEN` secret. The `language` input selects the matrix:
+`js` (the 5 JS impls), `dart` (`traceway-dart-mem`/`-disk`), or `both`. Results
+are uploaded as `results-<impl>` artifacts. `ios` runs `honeycomb-ios` alongside
+the two `traceway-ios` impls; `android` runs `honeycomb-android` alongside the two
+`traceway-android` impls.
+
+`max-parallel: 3` caps concurrent matrix entries at 3. Each entry holds one SUT
+(`ccx33`, 8 dedicated vCPUs during `hot`/`churn`) plus one shared-vCPU loadgen
+(`cpx42`), so peak usage is 24 dedicated vCPUs and 6 servers. The Hetzner project
+quota must cover both: a dedicated-vCPU limit < 24 or a server limit < 6 fails the
+extra entries with `resource_limit_exceeded`. Keep the loadgen on a shared-vCPU
+type so it stays off the dedicated-vCPU quota.
+
+## Knobs
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `IMPLS` | `traceway-oxc honeycomb` | run-local.sh only; `traceway-goja` selects the goja parser in the same oxc-built binary |
+| `SCENARIOS` | `hot churn` | |
+| `CHURN_ENTRIES` | `512` | corpus size for churn |
+| `OOM_CACHE` | corpus size (js/dart), `128` (ios/android) | resolver cache size for oom; iOS and Android use a bounded cache so oom is an eviction soak rather than a resident-corpus test |
+| `PAD_KB` | `256` | padding per bundle |
+| `CONNECTIONS` | ramp | comma list of concurrency steps |
+| `STEP_DURATION` | `30s` local, `60s` hetzner | time per step |
+| `SPANS_PER_REQUEST` | `20` | exception spans per OTLP request |
+| `SUT_TYPE` / `LDG_TYPE` | `ccx33` / `ccx23` | hetzner server types |

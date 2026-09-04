@@ -2,6 +2,23 @@
 
 Upload source maps to Traceway so that minified stack traces in production exceptions are automatically deobfuscated.
 
+## Emit the Maps First
+
+Most bundlers do not write `.map` files for a production build unless you ask them to. Turn it on before you wire up any upload:
+
+| Bundler | Setting |
+|---------|---------|
+| Vite | `build: { sourcemap: true }` in `vite.config.js` |
+| Rollup | `output: { sourcemap: true }` |
+| webpack | `devtool: "source-map"` |
+| Next.js | `productionBrowserSourceMaps: true` in `next.config.js` |
+
+This matters because the uploader treats an empty result as success. With no maps on disk, `traceway-sourcemaps` prints `No .map files found in <dir>` and exits with code 0, so a `postbuild` hook or CI step looks green while nothing was ever uploaded. After a build, confirm the files exist:
+
+```bash
+ls dist/assets/*.map
+```
+
 ## Installation
 
 ```bash
@@ -10,17 +27,24 @@ npm install -D @tracewayapp/sourcemap-upload
 
 This provides the `traceway-sourcemaps` CLI command.
 
+## Getting an Upload Token
+
+Uploads authenticate with a dedicated **upload token**, not the project token your SDK uses. Generate it in the dashboard: open the **Connection** page for your project, scroll to the **Source Maps** section, and click **Generate Upload Token**. The token is per-project and can be copied from the same place later.
+
+Treat it like any other CI secret. **Regenerate** issues a new token and invalidates the current one immediately, so any pipeline still using the old token fails to upload until its secret is updated. Members with the `readonly` role cannot generate or regenerate tokens; ask an organization admin.
+
 ## Usage
 
 ```bash
 traceway-sourcemaps \
   --url https://your-traceway-instance.com \
   --token your-sourcemap-token \
-  --version 1.2.3 \
   --directory ./dist
 ```
 
-The CLI recursively finds all `*.map` files in the specified directory and uploads them to Traceway via `POST /api/sourcemaps/upload`.
+The CLI recursively finds all `*.map` files in the specified directory and uploads them to Traceway via `POST /api/sourcemaps/upload`, together with the sibling `.js`/`.cjs`/`.mjs` bundle next to each map when one exists. The bundle is what lets the backend resolve the enclosing function name for each frame; without it, symbolication still resolves file, line, and column but leaves function names as the browser reported them.
+
+On self-hosted instances, uploaded files land in the backend's [blob storage](/server/storage); configure S3 or a persistent volume there before wiring uploads into CI, or the maps disappear when the container is recreated.
 
 ## CLI Options
 
@@ -28,7 +52,6 @@ The CLI recursively finds all `*.map` files in the specified directory and uploa
 |------|----------|-------------|
 | `--url <url>` | Yes | Traceway backend URL |
 | `--token <token>` | Yes | Source map upload token |
-| `--version <version>` | Yes | App version to associate with the source maps |
 | `--directory <dir>` | No | Directory to search (default: current directory) |
 
 ## Environment Variables
@@ -44,7 +67,13 @@ Flags take precedence over environment variables when both are set.
 
 ## Limits
 
-Individual source map files must not exceed **50MB**.
+Individual source map files must not exceed **50MB**, and one request must not exceed **250MB** and **1000 files** (maps and bundles together) in total.
+
+The CLI posts every map and its sibling bundle in a single request, so the total is what a large build actually hits. A request over the total answers `413`; a single file over 50MB answers `400`.
+
+## Maps Without Source File Names
+
+Some build pipelines produce source maps where the `sources` array contains `null` entries: the mappings and embedded source content are intact, but the original file names are missing. Traceway still deobfuscates these frames, resolving the line, column, and function name, and shows `<unknown>` in place of the file name (e.g. `<unknown>:3:9`). To get real file names in stack traces, configure your bundler to emit `sources` entries in its source maps.
 
 ## CI/CD Example (GitHub Actions)
 
@@ -58,16 +87,16 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
 
       - run: npm ci
       - run: npm run build
 
       - name: Upload source maps
-        run: npx traceway-sourcemaps --version ${{ github.sha }} --directory ./dist
+        run: npx traceway-sourcemaps --directory ./dist
         env:
           TRACEWAY_URL: ${{ secrets.TRACEWAY_URL }}
           TRACEWAY_SOURCEMAP_TOKEN: ${{ secrets.TRACEWAY_SOURCEMAP_TOKEN }}
@@ -81,28 +110,60 @@ Add the upload step to your `package.json` scripts:
 {
   "scripts": {
     "build": "vite build",
-    "postbuild": "traceway-sourcemaps --version $npm_package_version --directory ./dist"
+    "postbuild": "traceway-sourcemaps --directory ./dist"
   }
 }
 ```
 
 Make sure `TRACEWAY_URL` and `TRACEWAY_SOURCEMAP_TOKEN` are set in your environment.
 
-## Version Matching
+## HTTP API
 
-The `--version` value must match the `version` option passed to the Traceway SDK during initialization:
+The CLI is a thin wrapper around a single endpoint, so any CI pipeline can upload without Node.js:
 
-```javascript
-import { init } from "@tracewayapp/frontend";
-
-init("your-token@https://traceway.example.com/api/report", {
-  version: "1.2.3", // Must match the --version used during upload
-});
+```
+POST /api/sourcemaps/upload
+Authorization: Bearer {upload token}
+Content-Type: multipart/form-data
 ```
 
-When an exception is captured, Traceway uses the version to look up the correct source maps and deobfuscate the stack trace.
+Files go in the repeatable multipart field `files`. Upload each bundle together with its map:
+
+```bash
+curl --fail -X POST "https://your-traceway-instance.com/api/sourcemaps/upload" \
+  -H "Authorization: Bearer $TRACEWAY_SOURCEMAP_TOKEN" \
+  -F "files=@dist/assets/index-DZ8aDdLF.js" \
+  -F "files=@dist/assets/index-DZ8aDdLF.js.map"
+```
+
+The contract:
+
+| Behavior | Detail |
+|----------|--------|
+| Accepted extensions | `.map`, `.js`, `.cjs`, `.mjs`. Files with any other extension are silently skipped, not rejected. |
+| Size limit | 50MB per file. A larger file fails the request with `400` and an error message. |
+| Total request size | 250MB across all files in one request. A larger body fails with `413`. |
+| File count | 1000 files per request, counting the bundles uploaded next to the maps. More than that fails with `422`; upload the build in smaller batches. |
+| Auth failure | Missing or invalid token returns `401`. |
+| Response | `200` with `{"uploaded": N}`, counting only the stored files (skipped files are excluded). |
+| Debug IDs | Detected server-side in the uploaded content; no extra fields or flags needed. |
+| Effect | Immediate. Cached resolvers for the uploaded filenames are evicted before the response, and precompiled [`.tw` resolvers](/symbolicator#the-tw-resolver-format) are rebuilt in the background so the first exception after a deploy finds a warm cache. |
+
+The multipart filename becomes the stored name, and stack frames match against the basename of the frame's file, so send plain filenames without directory paths. `curl -F` already does this: it uses the basename of the local path.
+
+## How Maps Are Matched
+
+There is nothing to configure at runtime. When an exception is captured, Traceway resolves each minified frame in two steps:
+
+1. **By debug ID**, when the exception carries one for the frame's file. If your build uses [`@tracewayapp/bundler-plugin`](/client/js-sdk/debug-ids), every bundle and its map share an embedded unique ID, and the backend picks the map uploaded with that exact ID, immune to filename collisions and concurrent deploys. The upload endpoint detects debug IDs in uploaded files automatically; no CLI flags involved.
+2. **By filename** otherwise: the map you uploaded under the frame's filename is used. The most recent upload of each filename wins, so content-hashed bundle names (the default in Vite, Next, Angular, and most bundlers) keep every build's maps distinct automatically.
+
+Uploads take effect immediately: the backend evicts any cached state for the uploaded filenames, so exceptions arriving right after a deploy resolve against the new maps. See [Symbolication](/symbolicator/javascript) for the full resolution pipeline.
+
+The SDK's `version` option is unrelated to source maps: it is plain metadata shown on exceptions in the dashboard for filtering by build, and can be set or omitted independently of uploads.
 
 ## Next Steps
 
-- [Exceptions](/client/js-sdk/exceptions) — capturing errors with the JS SDK
-- [Initialization](/client/js-sdk/initialization) — configuring the SDK `version` option
+- [Debug IDs](/client/js-sdk/debug-ids): exact build-to-map matching with the bundler plugin
+- [Exceptions](/client/js-sdk/exceptions): capturing errors with the JS SDK
+- [Initialization](/client/js-sdk/initialization): configuring the SDK `version` option

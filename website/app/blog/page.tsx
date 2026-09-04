@@ -1,71 +1,36 @@
-import Link from "next/link";
 import type { Metadata } from "next";
 import { Eyebrow } from "@/components/eyebrow";
-import { getAllPosts } from "@/lib/blog";
+import { BlogTabs } from "@/components/blog-tabs";
+import { BlogPostList } from "@/components/blog-post-list";
+import { BlogSubscribe } from "@/components/blog-subscribe";
+import { getPostsByCategory } from "@/lib/blog";
 
 export const metadata: Metadata = {
-  title: "Blog — Traceway",
-  description: "Release notes and updates from the Traceway team.",
+  title: "Blog · Traceway",
+  description:
+    "Deep dives, benchmarks, and engineering notes from the Traceway team.",
 };
 
 export default function BlogIndex() {
-  const posts = getAllPosts();
+  const posts = getPostsByCategory("engineering");
 
   return (
-    <main className="relative">
-      <section className="wrap py-20">
-        <div className="prose">
+    <main className="relative blog-scope">
+      <section className="wrap pt-6 pb-24">
+        <div className="prose max-w-[960px]">
           <Eyebrow>Blog</Eyebrow>
-          <h1 className="mt-4 mb-3">Releases & updates</h1>
-          <p style={{ color: "var(--fg-3)" }} className="mb-12">
-            What we shipped, and when.
+          <h1 className="mt-4 mb-3">Engineering</h1>
+          <p style={{ color: "var(--fg-2)" }} className="mb-12">
+            Deep dives, benchmarks, and how we build Traceway.
           </p>
 
-          {posts.length === 0 ? (
-            <p style={{ color: "var(--fg-3)" }}>No posts yet.</p>
-          ) : (
-            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-              {posts.map((post) => (
-                <li
-                  key={post.slug}
-                  style={{ borderTop: "1px solid var(--hair)", padding: "20px 0" }}
-                >
-                  <Link
-                    href={`/blog/${post.slug}`}
-                    style={{ color: "var(--fg-0)", textDecoration: "none" }}
-                    className="block hover:opacity-80 transition-opacity"
-                  >
-                    <div
-                      className="text-[12px] mb-1"
-                      style={{ color: "var(--fg-3)", fontFamily: "var(--font-mono)" }}
-                    >
-                      {formatDate(post.date)}
-                    </div>
-                    <div
-                      className="text-[18px] font-medium"
-                      style={{ fontFamily: "var(--font-display)" }}
-                    >
-                      {post.title}
-                    </div>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
+          <BlogTabs active="blog" />
+
+          <BlogPostList posts={posts} />
+
+          <BlogSubscribe />
         </div>
       </section>
     </main>
   );
-}
-
-function formatDate(isoDate: string): string {
-  if (!isoDate) return "";
-  const d = new Date(isoDate + "T00:00:00Z");
-  if (Number.isNaN(d.getTime())) return isoDate;
-  return d.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "long",
-    day: "numeric",
-    timeZone: "UTC",
-  });
 }

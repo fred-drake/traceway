@@ -1,0 +1,128 @@
+{
+  "tier": "ccx13",
+  "mode": "duckdb",
+  "signal": "spans",
+  "scenario": "read-probe",
+  "startedAt": "2026-07-21T14:23:14Z",
+  "endedAt": "2026-07-21T14:40:18Z",
+  "readProbe": {
+    "endpoints": [
+      {
+        "name": "endpoints-grouped",
+        "path": "/api/endpoints/grouped"
+      },
+      {
+        "name": "endpoints-chart",
+        "path": "/api/endpoints/chart"
+      },
+      {
+        "name": "exception-stack-traces",
+        "path": "/api/exception-stack-traces"
+      }
+    ],
+    "readPath": "/api/endpoints/grouped",
+    "readThresholdMs": 5000,
+    "settleSeconds": 10,
+    "fillBatchSize": 8192,
+    "fillRequestRate": 100,
+    "steps": [
+      {
+        "fillLevelTarget": 1000000,
+        "rowsIngested": 1695744,
+        "ingestSecondsElapsed": 16.074486227,
+        "digestSeconds": 5.006851318,
+        "probes": [
+          {
+            "name": "endpoints-grouped",
+            "path": "/api/endpoints/grouped",
+            "latencyMs": 169.113337,
+            "ok": true
+          },
+          {
+            "name": "endpoints-chart",
+            "path": "/api/endpoints/chart",
+            "latencyMs": 139.026456,
+            "ok": true
+          },
+          {
+            "name": "exception-stack-traces",
+            "path": "/api/exception-stack-traces",
+            "latencyMs": 2.492602,
+            "ok": true
+          }
+        ],
+        "medianLatencyMs": 139.026456,
+        "readLatencyMs": 139.026456,
+        "readOk": true,
+        "passed": true
+      },
+      {
+        "fillLevelTarget": 10000000,
+        "rowsIngested": 10780672,
+        "ingestSecondsElapsed": 83.963192231,
+        "digestSeconds": 5.006837973,
+        "probes": [
+          {
+            "name": "endpoints-grouped",
+            "path": "/api/endpoints/grouped",
+            "latencyMs": 939.389513,
+            "ok": true
+          },
+          {
+            "name": "endpoints-chart",
+            "path": "/api/endpoints/chart",
+            "latencyMs": 902.3118890000001,
+            "ok": true
+          },
+          {
+            "name": "exception-stack-traces",
+            "path": "/api/exception-stack-traces",
+            "latencyMs": 3.0820079999999996,
+            "ok": true
+          }
+        ],
+        "medianLatencyMs": 902.3118890000001,
+        "readLatencyMs": 902.3118890000001,
+        "readOk": true,
+        "passed": true
+      },
+      {
+        "fillLevelTarget": 100000000,
+        "rowsIngested": 100646912,
+        "ingestSecondsElapsed": 858.420307916,
+        "digestSeconds": 5.005910713,
+        "probes": [
+          {
+            "name": "endpoints-grouped",
+            "path": "/api/endpoints/grouped",
+            "latencyMs": 6005.285989,
+            "ok": false,
+            "error": "Post \"http://10.0.0.2/api/endpoints/grouped?projectId=d589ccbf-929d-47e7-8709-c4b57967efaa\": context deadline exceeded"
+          },
+          {
+            "name": "endpoints-chart",
+            "path": "/api/endpoints/chart",
+            "latencyMs": 6002.100358,
+            "ok": false,
+            "error": "Post \"http://10.0.0.2/api/endpoints/chart?projectId=d589ccbf-929d-47e7-8709-c4b57967efaa\": context deadline exceeded"
+          },
+          {
+            "name": "exception-stack-traces",
+            "path": "/api/exception-stack-traces",
+            "latencyMs": 6005.271328,
+            "ok": false,
+            "error": "Post \"http://10.0.0.2/api/exception-stack-traces?projectId=d589ccbf-929d-47e7-8709-c4b57967efaa\": context deadline exceeded"
+          }
+        ],
+        "medianLatencyMs": 6005.271328,
+        "readLatencyMs": 6005.271328,
+        "readOk": false,
+        "passed": false,
+        "failReason": "probe endpoints-grouped failed: Post \"http://10.0.0.2/api/endpoints/grouped?projectId=d589ccbf-929d-47e7-8709-c4b57967efaa\": context deadline exceeded (latency 6005ms)"
+      }
+    ],
+    "maxFillLevelPassed": 10000000
+  },
+  "maxFillLevelPassed": 10000000,
+  "sutContainer": {}
+}

@@ -1,0 +1,109 @@
+# DuckDB
+
+import { Callout } from "nextra/components";
+
+The same single-container shape as the [SQLite deployment](/server/sqlite), but with the telemetry store swapped for DuckDB's columnar engine. The main database (users, organizations, projects, notification rules) stays SQLite; endpoints, spans, exceptions, metrics, and logs go into a DuckDB file next to it. No external Postgres or ClickHouse required.
+
+Pick this over the plain SQLite image when your dashboards slow down as data grows: on the same box, DuckDB keeps the dashboard responsive at 10 to 100 times more stored telemetry rows, and columnar compression makes the telemetry file several times smaller for the same data. See [Hardware Requirements](/learn/hardware-requirements#duckdb-mode-the-small-one-that-reads-big) for sizing guidance and benchmark numbers.
+
+<Callout type="info">
+  Like the SQLite image, this one runs as a single instance: both database files live under `/data`, and a second container cannot share them or learn about the first one's writes. Running more than one backend instance needs the PostgreSQL + ClickHouse build; see [Running more than one instance](/server/minimal#running-more-than-one-instance).
+</Callout>
+
+Two operational differences from the SQLite image:
+
+- **The image is Debian, not Alpine.** The DuckDB engine links glibc static libraries, so this build cannot run on musl-based images.
+- **Set `DUCKDB_MEMORY_LIMIT` on memory-capped hosts.** DuckDB sizes its memory budget to roughly 80% of what it thinks is host RAM, and inside a container it sees the host, not the container limit. An uncapped DuckDB in a capped container is the one configuration that reliably gets the backend OOM-killed under ingest.
+
+## Quick Start
+
+Pull the pre-built image and run it with a persistent data volume:
+
+```bash
+docker pull ghcr.io/tracewayapp/traceway:duckdb
+
+docker run -d --name traceway \
+  -p 80:80 \
+  -v "$(pwd)/traceway-data:/data" \
+  -e JWT_SECRET="your-jwt-secret-min-32-characters-long" \
+  -e APP_BASE_URL="https://traceway.example.com" \
+  -e DUCKDB_MEMORY_LIMIT="2GB" \
+  ghcr.io/tracewayapp/traceway:duckdb
+```
+
+Set `DUCKDB_MEMORY_LIMIT` to roughly half the memory you give the container. On an uncapped dedicated host you can omit it and let DuckDB tune itself.
+
+After starting, open `http://localhost/register` to create your first account.
+
+## Build from Source
+
+Only needed if you want to run a custom or modified build:
+
+```bash
+docker build -f Dockerfile.duckdb -t traceway:duckdb .
+```
+
+Then use `traceway:duckdb` instead of `ghcr.io/tracewayapp/traceway:duckdb` in the commands above. The build needs CGO, so building outside Docker requires `CGO_ENABLED=1 go build -tags telemetry_duckdb ./cmd/traceway` on a glibc system; see [Build Tags](/learn/build-tags).
+
+## Blob storage
+
+Identical to the SQLite image: blobs (source maps, session recordings, AI traces) go to `/data/storage` by default, or to S3 with `STORAGE_TYPE=s3` plus the `S3_*` variables. See the [SQLite page](/server/sqlite#run-s3-storage) for the S3 example; every flag works the same here.
+
+## Configuration
+
+All [SQLite deployment variables](/server/sqlite#configuration) apply unchanged (`JWT_SECRET`, `APP_BASE_URL`, `SQLITE_PATH`, `STORAGE_*`, `S3_*`, `PORTS`, `LOG_RECORDS_MAX_ROWS`, `SESSION_RECORDING_RETENTION_DAYS`). The retention worker prunes the DuckDB telemetry tables hourly and issues a `CHECKPOINT` afterwards so deleted rows are actually reclaimed from disk. It keeps 30 days by default, configurable with `DUCKDB_RETENTION_DAYS` (when that is unset, a configured `SQLITE_RETENTION_DAYS` still applies as a fallback).
+
+On top of those, the DuckDB build has these knobs:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DUCKDB_RETENTION_DAYS` | `30` | Days to keep telemetry rows in the DuckDB store. Not a hard cutoff: a cleanup task runs once an hour and deletes rows older than the window, so expired rows can linger until the next run. Set to `0` to disable pruning. Falls back to `SQLITE_RETENTION_DAYS` when unset. |
+| `DUCKDB_MEMORY_LIMIT` | *(unset, DuckDB auto-tunes to ~80% of host RAM)* | Memory budget for the telemetry engine, e.g. `2GB`. Set it explicitly in any memory-capped container, to roughly half the container's RAM. |
+| `DUCKDB_THREADS` | *(unset, DuckDB uses all cores)* | Caps the engine's thread count, e.g. `4`. Useful on shared hosts. |
+| `DUCKDB_CHECKPOINT_THRESHOLD` | *(unset, DuckDB default 16MB)* | WAL size that triggers a checkpoint, e.g. `256MB`. Raise it under sustained ingest to reduce checkpoint stalls; the cost is a larger WAL on disk and a longer replay after a restart. |
+
+## Persistence
+
+Mount a host folder or a named volume at `/data` to keep everything across restarts:
+
+```
+/data/
+├── traceway.db                    # users, organizations, projects, ... (SQLite)
+├── traceway.db-wal                # SQLite WAL
+├── traceway.db-shm                # SQLite shared memory
+├── traceway_telemetry.duckdb      # endpoints, exceptions, spans, metrics, ... (DuckDB)
+├── traceway_telemetry.duckdb.wal  # DuckDB WAL
+└── storage/                       # source maps, session recordings, AI traces (when STORAGE_TYPE=local)
+```
+
+Backup tip: the main database supports a hot backup with `sqlite3 traceway.db ".backup '/path/to/backup.db'"`. For the telemetry file, stop the container and copy `traceway_telemetry.duckdb` together with its `.wal` file; the WAL is required for crash recovery.
+
+## Switching from the SQLite image
+
+The two images share the same main database file, so users, projects, tokens, and settings carry over when you point the DuckDB image at an existing `/data` volume. Telemetry does not: the DuckDB image starts a fresh `traceway_telemetry.duckdb`, and the rows in the old `traceway_telemetry.db` are not migrated. Old telemetry ages out of view and the old file can be deleted once you no longer need it. Switching back to the SQLite image behaves the same way in reverse.
+
+## Access Points
+
+| URL | Description |
+|-----|-------------|
+| `http://localhost/` | Frontend dashboard |
+| `http://localhost/api/*` | Backend API |
+| `http://localhost/health` | Health check |
+| `http://localhost/api/health/deep` | Telemetry store introspection (operator endpoint, requires the `HEALTH_DEEP_TOKEN` bearer secret; unset disables it): dropped rows, insert failures, db/WAL size, engine memory |
+
+## Useful Commands
+
+```bash
+# View logs
+docker logs traceway
+docker logs -f traceway
+
+# Enter container shell
+docker exec -it traceway bash
+
+# Health check
+curl http://localhost/health
+
+# Stop and remove (data survives in the mounted volume)
+docker stop traceway && docker rm traceway
+```

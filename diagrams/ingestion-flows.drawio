@@ -1,0 +1,185 @@
+<mxfile host="app.diagrams.net" version="29.3.6">
+  <diagram name="Page-1" id="ingestion-flows-1">
+    <mxGraphModel dx="815" dy="558" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1650" pageHeight="700" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="cA" parent="1" style="swimlane;whiteSpace=wrap;html=1;collapsible=0;startSize=26;" value="Traceway SDK clients" vertex="1">
+          <mxGeometry height="250" width="240" x="40" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="cA1" parent="cA" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;JS SDKs&lt;/b&gt;&lt;br&gt;&lt;i&gt;React, Svelte, Vue, Next.js,&lt;br&gt;React Native&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="200" x="20" y="38" as="geometry" />
+        </mxCell>
+        <mxCell id="cA2" parent="cA" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Mobile SDKs&lt;/b&gt;&lt;br&gt;&lt;i&gt;iOS, Android, Flutter&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="200" x="20" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="cA3" parent="cA" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Go SDK&lt;/b&gt;&lt;br&gt;&lt;i&gt;gin, chi, fiber, stdlib&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="200" x="20" y="182" as="geometry" />
+        </mxCell>
+        <mxCell id="cB" parent="1" style="swimlane;whiteSpace=wrap;html=1;collapsible=0;startSize=26;" value="OpenTelemetry clients" vertex="1">
+          <mxGeometry height="180" width="240" x="40" y="360" as="geometry" />
+        </mxCell>
+        <mxCell id="cB1" parent="cB" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;OTel-instrumented backends&lt;/b&gt;&lt;br&gt;&lt;i&gt;Laravel, Django, NestJS,&lt;br&gt;Hono, Workers, ...&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="200" x="20" y="38" as="geometry" />
+        </mxCell>
+        <mxCell id="cB2" parent="cB" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Traceway OTel Agent&lt;/b&gt;&lt;br&gt;&lt;i&gt;host metrics&lt;/i&gt;" vertex="1">
+          <mxGeometry height="50" width="200" x="20" y="118" as="geometry" />
+        </mxCell>
+        <mxCell id="report" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;POST /api/report&lt;/b&gt;&lt;br&gt;&lt;i&gt;gzipped JSON&lt;br&gt;collection frames&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="190" x="340" y="130" as="geometry" />
+        </mxCell>
+        <mxCell id="otlp" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;POST /api/otel/v1/*&lt;/b&gt;&lt;br&gt;&lt;i&gt;traces, metrics, logs, profiles&lt;br&gt;protobuf or JSON, gzip&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="190" x="340" y="400" as="geometry" />
+        </mxCell>
+        <mxCell id="auth" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;" value="&lt;b&gt;Project token auth&lt;/b&gt;&lt;br&gt;&lt;br&gt;&lt;i&gt;Authorization:&lt;br&gt;Bearer&lt;br&gt;&amp;lt;project token&amp;gt;&lt;/i&gt;" vertex="1">
+          <mxGeometry height="400" width="110" x="585" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="pA" parent="1" style="swimlane;whiteSpace=wrap;html=1;collapsible=0;startSize=26;" value="Report pipeline" vertex="1">
+          <mxGeometry height="250" width="300" x="750" y="60" as="geometry" />
+        </mxCell>
+        <mxCell id="frame" parent="pA" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Parse collection frames&lt;/b&gt;&lt;br&gt;&lt;i&gt;traces, stackTraces, metrics,&lt;br&gt;sessions, recordings&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="260" x="20" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="split" parent="pA" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Traces + nested spans&lt;/b&gt;&lt;br&gt;&lt;i&gt;isTask ? Task : Endpoint&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="260" x="20" y="110" as="geometry" />
+        </mxCell>
+        <mxCell id="recq" parent="pA" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Recording uploader&lt;/b&gt;&lt;br&gt;&lt;i&gt;bounded queue + workers&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="260" x="20" y="180" as="geometry" />
+        </mxCell>
+        <mxCell id="pB" parent="1" style="swimlane;whiteSpace=wrap;html=1;collapsible=0;startSize=26;" value="OTel pipeline" vertex="1">
+          <mxGeometry height="250" width="300" x="750" y="360" as="geometry" />
+        </mxCell>
+        <mxCell id="class" parent="pB" style="rounded=0;whiteSpace=wrap;html=1;align=left;spacingLeft=8;" value="&lt;b&gt;Span classifier&lt;/b&gt;&lt;br&gt;&lt;i&gt;HTTP SERVER span &#8594; Endpoint&lt;br&gt;CONSUMER / console.command &#8594; Task&lt;br&gt;gen_ai.* attributes &#8594; AI Trace&lt;br&gt;other spans &#8594; Spans&lt;/i&gt;" vertex="1">
+          <mxGeometry height="95" width="260" x="20" y="35" as="geometry" />
+        </mxCell>
+        <mxCell id="evexc" parent="pB" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Exceptions&lt;/b&gt;&lt;br&gt;&lt;i&gt;from span events + exception.* attrs&lt;/i&gt;" vertex="1">
+          <mxGeometry height="50" width="260" x="20" y="142" as="geometry" />
+        </mxCell>
+        <mxCell id="conv" parent="pB" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Metric / log / profile converters&lt;/b&gt;" vertex="1">
+          <mxGeometry height="40" width="260" x="20" y="200" as="geometry" />
+        </mxCell>
+        <mxCell id="sym" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Symbolication at ingest&lt;/b&gt;&lt;br&gt;&lt;i&gt;JS, Dart, iOS, Android&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="190" x="1110" y="240" as="geometry" />
+        </mxCell>
+        <mxCell id="hash" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Normalized stack-trace hash&lt;/b&gt;&lt;br&gt;&lt;i&gt;groups occurrences into Issues&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="190" x="1110" y="350" as="geometry" />
+        </mxCell>
+        <mxCell id="store" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Telemetry store&lt;/b&gt;&lt;br&gt;&lt;i&gt;ClickHouse / SQLite / DuckDB&lt;/i&gt;&lt;br&gt;&lt;br&gt;&lt;i&gt;endpoints, tasks, ai_traces,&lt;br&gt;spans, exception_stack_traces,&lt;br&gt;metric_points, log_records,&lt;br&gt;sessions, profiles&lt;/i&gt;" vertex="1">
+          <mxGeometry height="170" width="230" x="1380" y="80" as="geometry" />
+        </mxCell>
+        <mxCell id="blob" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Object storage&lt;/b&gt;&lt;br&gt;&lt;i&gt;S3 / local disk&lt;/i&gt;&lt;br&gt;&lt;br&gt;&lt;i&gt;recording segments,&lt;br&gt;AI conversations&lt;/i&gt;" vertex="1">
+          <mxGeometry height="110" width="230" x="1380" y="430" as="geometry" />
+        </mxCell>
+        <mxCell id="eA" edge="1" parent="1" source="cA" target="report" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eB" edge="1" parent="1" source="cB" target="otlp" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eR2A" edge="1" parent="1" source="report" target="auth" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.15;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eO2A" edge="1" parent="1" source="otlp" target="auth" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.85;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eA2RP" edge="1" parent="1" source="auth" target="pA" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.15;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eA2OP" edge="1" parent="1" source="auth" target="pB" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.85;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eF2S" edge="1" parent="pA" source="frame" target="split" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eC2E" edge="1" parent="pB" source="class" target="evexc" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eSTACK" edge="1" parent="1" source="frame" target="sym" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.3;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1065" y="125" />
+              <mxPoint x="1065" y="261" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eSTACKl" connectable="0" parent="eSTACK" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="stack traces" vertex="1">
+          <mxGeometry relative="1" x="-0.85" y="0" as="geometry">
+            <mxPoint x="0" y="-10" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eEVEXC" edge="1" parent="1" source="evexc" target="sym" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.7;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1090" y="527" />
+              <mxPoint x="1090" y="289" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eEVEXCl" connectable="0" parent="eEVEXC" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="raw stacks" vertex="1">
+          <mxGeometry relative="1" x="-0.6" y="0" as="geometry">
+            <mxPoint x="0" y="-10" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eSYM2H" edge="1" parent="1" source="sym" target="hash" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eH2STORE" edge="1" parent="1" source="hash" target="store" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.15;entryY=1;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1414" y="385" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eH2STOREl" connectable="0" parent="eH2STORE" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="exceptions" vertex="1">
+          <mxGeometry relative="1" x="-0.4" y="0" as="geometry">
+            <mxPoint x="0" y="-10" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eRP2STORE" edge="1" parent="1" source="pA" target="store" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.35;exitDx=0;exitDy=0;entryX=0;entryY=0.35;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eRP2STOREl" connectable="0" parent="eRP2STORE" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="endpoints, tasks, spans,&lt;div&gt;metrics, sessions&lt;/div&gt;" vertex="1">
+          <mxGeometry relative="1" x="0.15" y="0" as="geometry">
+            <mxPoint x="0" y="-20" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eRECQ" edge="1" parent="1" source="recq" target="blob" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.2;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1075" y="267" />
+              <mxPoint x="1075" y="332" />
+              <mxPoint x="1426" y="332" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eRECQl" connectable="0" parent="eRECQ" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="recording segments" vertex="1">
+          <mxGeometry relative="1" x="0.35" y="0" as="geometry">
+            <mxPoint x="40" y="12" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eO2STORE" edge="1" parent="1" source="pB" target="store" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="900" y="640" />
+              <mxPoint x="1630" y="640" />
+              <mxPoint x="1630" y="165" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eO2STOREl" connectable="0" parent="eO2STORE" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="endpoints, tasks, ai_traces, spans,&lt;div&gt;metrics, logs, profiles&lt;/div&gt;" vertex="1">
+          <mxGeometry relative="1" x="-0.35" y="0" as="geometry">
+            <mxPoint x="0" y="-16" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="eO2BLOB" edge="1" parent="1" source="pB" target="blob" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.8;exitDx=0;exitDy=0;entryX=0;entryY=0.7;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="eO2BLOBl" connectable="0" parent="eO2BLOB" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="AI conversations" vertex="1">
+          <mxGeometry relative="1" x="-0.2" y="0" as="geometry">
+            <mxPoint x="0" y="-10" as="offset" />
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

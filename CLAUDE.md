@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Traceway is an error tracking and monitoring platform consisting of:
 - **Frontend**: SvelteKit 2 dashboard application with Svelte 5
 - **Backend**: Go/Gin API server with ClickHouse database
-- **Go Client SDK**: Distributed tracing SDK for Go applications (external repo)
+- **CLI**: Go/Cobra command-line client for the backend HTTP API (`/cli`)
 
 ---
 
@@ -15,7 +15,7 @@ Traceway is an error tracking and monitoring platform consisting of:
 
 - **No pointless comments**: Do not add comments that simply describe what the code does. The code should be self-explanatory. Only add comments when explaining non-obvious "why" decisions.
 - **No `py-4` in dialog form content**: Do not add `py-4` on the content wrapper inside `AlertDialog` or `Dialog` components — it creates too much blank space between the form and the action buttons.
-- **Dialog button labels & toasts**: For form dialogs, use descriptive button labels with icons instead of generic "Create"/"Update". Create actions: `<Plus icon> {Action} {Entity}` (e.g., "+ New Widget Group"). Update actions: `<Check icon> Update {Entity}`. After successful create/update, show a `toast.success('Successfully {action} the {Entity}', { position: 'top-center' })`. The button should only be `disabled` during the loading state — never disable it to enforce validation; let the backend return 422 and show the error in the dialog instead.
+- **Dialog button labels & toasts**: For form dialogs, use descriptive button labels with icons instead of generic "Create"/"Update". The `{Entity}` is always a platform entity, capitalized (Project, Widget, Dashboard, Channel, Rule, Token, Invitation, ...). Create actions: `<Plus icon> New {Entity}` with `variant="success"`. Update actions: `<Check icon> Update {Entity}` with the default (primary) variant. Delete/revoke/remove confirm buttons: `<Trash2 icon> Delete {Entity}` (or `Revoke {Entity}` / `Remove {Entity}`) with `variant="destructive"`. After success, show `toast.success('Successfully created the {Entity}', { position: 'top-center' })` for creates and `'Successfully updated the {Entity}'` for updates. The button should only be `disabled` during the loading state — never disable it to enforce validation; let the backend return 422 and show the error in the dialog instead.
 
 ---
 
@@ -27,28 +27,45 @@ Traceway is an error tracking and monitoring platform consisting of:
 | Frontend | `cd frontend && npm run dev` | Dev server (port 5173) |
 | Frontend | `npm run build` | Production build |
 | Frontend | `npm run check` | TypeScript checking |
-| Backend | `cd backend && go run .` | API server (port 8082) |
-| Go Client | External repo at `/Users/dusanstanojevic/Documents/workspace/go-client` | Build with `go build ./...` |
+| Frontend | `npm run lint` | `prettier --check . && eslint .` (CI gate; `npm run format` fixes the prettier half) |
+| Backend | `cd backend && go run ./cmd/traceway` | API server (port 8082) |
+| Backend | `cd backend && govulncheck ./...` | Vulnerability scan (default tags only); CI also scans the other storage build-tag combos (`.github/workflows/backend-vulncheck.yml`) |
+| CLI | `cd cli && just build` | Builds `bin/traceway` |
+| CLI | `cd cli && just test` | Runs unit tests |
+| CLI | `cd cli && just check` | Lint + test + vulncheck + skill drift + contract tests (pre-commit gate; CI enforces it for `cli/`) |
+| CLI | `cd cli && just smoke-test` | Live E2E (needs `TRACEWAY_SMOKE_*` env vars) |
+| Any | `nix develop` (or direnv via `.envrc`) | Dev shell with the Go and Node versions read from `backend/go.mod` and `.nvmrc`, plus `just`, `golangci-lint`, `govulncheck` (`flake.nix`; shells `default`, `backend`, `frontend`, `oxc`). Put `JWT_SECRET` in the gitignored `.envrc.local` |
+| Any | `./scripts/check-node-pins.sh` | Asserts every Dockerfile's `ARG NODE_VERSION` default matches `.nvmrc`; run by `release-traceway.yml` before it builds |
+
+**Node's version lives in `.nvmrc`** (a bare major, currently `26`) and nothing else derives it independently: every `setup-node` step uses `node-version-file: .nvmrc`, `flake.nix` reads it for the dev shells, and `release-traceway.yml` passes it to all five image builds as `--build-arg NODE_VERSION`. The Dockerfiles each carry an `ARG NODE_VERSION=<major>` default because a bare `docker build` cannot read `.nvmrc`; that default is the one value that can drift, which is what `scripts/check-node-pins.sh` exists to catch (it also fails on a literal `node:<major>` tag reintroduced in a `FROM`). To move Node, edit `.nvmrc` and the ARG defaults, then run the script. `frontend/package.json`'s `engines.node` is deliberately left as a floor (`>=22`) rather than a pin — it is what npm enforces on consumers, and `node-version-file` pointed at it resolves a range to the *newest* release, which is the drift `f95424cc` was fixing. `testing/devtesting-nestjs/Dockerfile` is out of scope: it pins the runtime of a sample third-party app, not anything Traceway builds.
+
+Set `JWT_SECRET` (min 32 characters) before running the backend — it is the one variable with no default in the standalone binary (the all-in-one Docker image bakes a public one in via `backend/.env.docker`, which must be overridden in production). `SQLITE_PATH` sets the database location, defaulting to `./traceway.db` in the working directory.
+
+CI on pull requests is opt-in. `backend.yml`, `backend-vulncheck.yml`, `cli.yml`, `cli-lint.yml`, `cli-contract.yml` and `frontend.yml` listen for `pull_request: types: [labeled]` and every job is gated on `github.event.label.name == 'ci'`, so a PR runs nothing until a maintainer applies the `ci` label (only collaborators can), and applying any other label runs nothing either. Each application validates the PR as it is at that moment: to validate later pushes, remove and re-add the label. The same workflows still run on pushes to `main` that touch their paths (`backend/**`, `cli/**`, `frontend/**`, `skills/traceway/**` for `cli.yml`, `.nvmrc` for `frontend.yml`, their own workflow file), on their daily schedules (the two vulnchecks), and from the Actions tab via `workflow_dispatch`.
+
+Action versions are watched by `.github/dependabot.yml` (the `github-actions` ecosystem only; npm and Go modules are deliberately not watched there). It opens a weekly PR per group — `actions/*` in one, every third-party action in the other — and deliberately does **not** auto-apply `ci`, so a bot PR passes the same collaborator gate as any other. Label the first-party group to validate it; `golangci/golangci-lint-action` is reachable the same way via `cli-lint.yml`. The rest of the third-party group lands on `release-*.yml`, `benchmark-*.yml` and `traceway-autofix.yml`, which no label reaches — and `workflow_dispatch` is **not** a dry run on the release path: dispatching `release-docs.yml` or `release-website.yml` deploys to Cloudflare for real, and the other `release-*.yml` workflows publish real assets, so dispatching one from an unreviewed bot branch ships it. Validate those by reading the action's release notes instead, and dispatch only where the target is disposable. `traceway-autofix.yml` is the in-repo caller of the reusable `autofix.yml` (composite actions `.github/actions/autofix-prepare` and `autofix-publish` around the agent step; `docs/pages/learn/auto-fix.mdx` documents the contract); its `workflow_dispatch` takes an `issue_number` and runs the whole loop from the dispatched branch, which is the one pre-merge validation path for the `claude-code-action` pin — the most privileged action here — but it runs the agent for real, so dispatch it only at a scratch issue. Note too that labelling a PR which touches no gated workflow yields zero checks, which reads like a pass but is silence. Every updatable pin is a bare major tag, so Dependabot only ever proposes major bumps here.
 
 ### Tech Stack
 - **Frontend**: SvelteKit 2.49, Svelte 5.45, Tailwind CSS v4, shadcn-svelte, Vite 7
-- **Backend**: Go 1.25, Gin 1.11, ClickHouse, PostgreSQL
+- **Backend**: Go 1.26, Gin 1.11, ClickHouse, PostgreSQL (in `backend/go.mod` the `go` line is the floor importers inherit and the `toolchain` directive is what builds it — keep the two distinct)
+- **CLI**: Go 1.26, Cobra 1.10, separate Go module (`github.com/tracewayapp/traceway/cli`); justfile entrypoints, covered by the root `flake.nix` dev shell
 - **Client SDK**: Go 1.25, Gin middleware support
 
-### go-lightning Library (PostgreSQL ORM)
-- **Import**: `github.com/tracewayapp/go-lightning/lit`
-- **Purpose**: Lightweight generic CRUD operations for PostgreSQL
+### lit Library (SQL mapper)
+- **Import**: `github.com/tracewayapp/lit/v2` (currently v2.0.5)
+- **Purpose**: Lightweight generic CRUD operations on top of `database/sql`. Supports PostgreSQL, MySQL, SQLite, and DuckDB drivers (`lit.PostgreSQL`, `lit.MySQL`, `lit.SQLite`, `lit.DuckDB`). Traceway registers models against `db.Driver` (SQLite or PostgreSQL depending on build tags); the DuckDB telemetry backend deliberately keeps `lit.SQLite` for reads since DuckDB accepts `?` placeholders.
+- **Docs for AI use**: the lit repo ships a skill at `skills/lit/SKILL.md` plus `llms.txt` with the full API contract and pitfall checklist.
 
 #### Model Registration (required before use)
-All models are registered centrally in `models/models.go` via `models.Init()`:
+All models are registered centrally in `models/models.go` via `models.Init(driver lit.Driver)`, called at boot with `db.Driver`:
 ```go
-func Init() {
-    lit.RegisterModel[User](lit.PostgreSQL)
-    lit.RegisterModel[Project](lit.PostgreSQL)
+func Init(driver lit.Driver) {
+    lit.RegisterModel[User](driver)
+    lit.RegisterModel[Project](driver)
     // ...all models registered here
 }
 ```
-Repository-local result models (e.g., aggregate structs only used in one repo) can use file-level `init()` instead.
+Repository-local result models (e.g., aggregate structs only used in one repo) can use file-level `init()` instead. Irregular table names use `lit.RegisterModelWithNaming` with a struct embedding `lit.DefaultDbNamingStrategy` (see `escalationPolicyNaming` in `models.go`).
 
 #### Naming Conventions
 - Fields: CamelCase → snake_case (`FirstName` → `first_name`)
@@ -57,7 +74,7 @@ Repository-local result models (e.g., aggregate structs only used in one repo) c
 - Override via struct tag: `lit:"custom_name"`
 
 #### Core CRUD Operations
-All lit functions take `*sql.Tx` as the first argument for transactional consistency:
+All lit functions take a `lit.Executor` as the first argument. Both `*sql.Tx` and `*sql.DB` qualify: main-DB repositories pass the `*sql.Tx` from the transaction middleware, telemetry repositories pass `db.TelemetryDB` directly.
 
 | Function | Description |
 |----------|-------------|
@@ -68,7 +85,10 @@ All lit functions take `*sql.Tx` as the first argument for transactional consist
 | `lit.SelectSingle[T](tx, query, args...)` | Retrieve one record (returns `*T`) |
 | `lit.Update[T](tx, &entity, "id = $1", id)` | Update (auto-prepends WHERE) |
 | `lit.UpdateNative(tx, "UPDATE table SET col = $1 WHERE ...", args...)` | Raw SQL update for partial/single-field changes |
-| `lit.Delete(tx, "DELETE FROM table WHERE id = $1", id)` | Delete records |
+| `lit.Delete(tx, "DELETE FROM table WHERE id = $1", id)` | Delete records (any exec statement) |
+| `lit.SelectNamed[T]` / `lit.SelectSingleNamed[T]` / `lit.UpdateNamed[T]` | `:name` placeholder variants taking a `lit.P{...}` map; render per-driver, used for dialect-neutral queries |
+| `lit.DeleteNamed(driver, tx, query, lit.P{...})` | Named delete/exec. Gotcha: takes the driver as the FIRST argument |
+| `lit.ParseNamedQuery(driver, query, lit.P{...})` | Renders `:name` to positional; escape hatch for `QueryContext`/`RowsAffected` via `database/sql` |
 
 #### Transaction Helper (`pgdb.ExecuteTransaction`)
 All PostgreSQL operations should use `ExecuteTransaction` for automatic commit/rollback:
@@ -80,7 +100,7 @@ All PostgreSQL operations should use `ExecuteTransaction` for automatic commit/r
 
 project, err := pgdb.ExecuteTransaction(func(tx *sql.Tx) (*models.Project, error) {
     // All repository calls receive the transaction
-    return repositories.ProjectRepository.FindById(tx, id)
+    return transactional.ProjectRepository.FindById(tx, id)
 })
 ```
 
@@ -94,10 +114,10 @@ api.POST("/login", middleware.Transactional, authController.Login)
 
 // In controller - retrieve transaction from Gin context
 func (c *AuthController) Register(ctx *gin.Context) {
-    tx := middleware.GetTx(ctx)  // Get transaction from context
+    tx := db.GetTx(ctx)  // Get transaction from context (db package, not middleware)
 
     // Use tx for all repository calls
-    user, err := repositories.UserRepository.FindByEmail(tx, email)
+    user, err := transactional.UserRepository.FindByEmail(tx, email)
     if err != nil {
         ctx.JSON(500, gin.H{"error": err.Error()})
         return  // Transaction auto-rolls back on non-success status
@@ -111,7 +131,9 @@ func (c *AuthController) Register(ctx *gin.Context) {
 - Commits on status codes: 200, 201, 303
 - Rolls back on all other status codes or panics
 
-**Preference:** For CRUD controller methods, always prefer using `middleware.Transactional` in the route + `middleware.GetTx(ctx)` in the controller over `pgdb.ExecuteTransaction`. The middleware approach keeps controllers flat, avoids nested closures, and follows the established pattern.
+**Body buffering:** `Transactional` reads the request body into memory (cap `maxTransactionalBodyBytes`, 8MB) before it calls `db.DB.Begin()`, answering 413/408/400 without a transaction when that fails; the handler's later bind is served from memory. This is what keeps a slow-drip body from holding the single SQLite main-DB connection, and it covers every transactional route without each one remembering a special middleware. Routes that want a tighter cap put `middleware.BufferAuthBody` (64KB) in front of `Transactional`, which then skips the body it finds already buffered; the anonymous auth endpoints do this. The self-transacting OAuth routes (`/auth/device/*`, `/auth/token`, `/auth/logout`) use `BufferAuthBody` on its own for the same cap. `UseAppAuth` caps every dashboard route's body at the same 8MB with `MaxBytesReader`, so the non-transactional telemetry reads are bounded too. Every plain JSON bind site in the controllers answers through `middleware.RejectBindError(c, err, fallback)`, which maps `MaxBytesError` to 413 and the body guard's timeout to 408 with fixed messages and otherwise returns 400 with the fallback (the ingest routes use `middleware.RejectIngestBindError`, the same mapping except that the timeout becomes 503 + `Retry-After`, because OTLP exporters retry 503 but treat 408 as permanent; the Traceway SDKs re-queue a failed batch whatever the status); the guard itself swaps the raw deadline error (a `*net.OpError` naming the listener address) for `middleware.ErrBodyTimedOut` before it leaves `Read`, so no handler can echo the address.
+
+**Preference:** For CRUD controller methods, always prefer using `middleware.Transactional` in the route + `db.GetTx(ctx)` in the controller over `pgdb.ExecuteTransaction`. The middleware approach keeps controllers flat, avoids nested closures, and follows the established pattern. (The tx getter lives in the `db` package: `db.GetTx(ctx)`, not `middleware.GetTx`.)
 
 #### Repository Pattern
 Repositories accept `*sql.Tx` to participate in transactions:
@@ -195,7 +217,7 @@ func (r *userRepository) CountByOrganization(tx *sql.Tx, orgID uuid.UUID) (int, 
 
 ```go
 // CORRECT - check for nil
-user, err := repositories.UserRepository.FindByEmail(tx, email)
+user, err := transactional.UserRepository.FindByEmail(tx, email)
 if err != nil {
     return nil, err  // actual database error
 }
@@ -205,7 +227,7 @@ if user == nil {
 }
 
 // WRONG - do not use sql.ErrNoRows with lit
-user, err := repositories.UserRepository.FindByEmail(tx, email)
+user, err := transactional.UserRepository.FindByEmail(tx, email)
 if err == sql.ErrNoRows {  // This won't work with lit!
     // ...
 }
@@ -232,7 +254,15 @@ if err != nil {
 
 ### Environment Variables (Backend)
 ```
-JWT_SECRET=<min 32 char secret for JWT signing>
+JWT_SECRET=<min 32 char secret for JWT signing>   # the only variable with no default in the standalone binary. There is deliberately no fallback in the code: a key committed to the repo would be identical in every clone. The all-in-one Docker image is the exception, it copies `backend/.env.docker` with a public key that must be overridden in production. Unset or under 32 chars exits 1 with an actionable message rather than a panic.
+DB_TYPE=                              # sqlite | postgres. Defaults to sqlite in every build EXCEPT -tags transactional_pg, where an empty value still selects PostgreSQL. Without that tag SQLite is the only supported main DB (the migration runner applies SQLite-dialect migrations unconditionally), so the default is set once in config.defaultDBType rather than at each DBType call site.
+PORTS=80,8082                         # comma-separated HTTP listen ports. Every port is bound up front; a port that fails to bind (typically :80 as a non-root user) logs a warning (and reports via CaptureException when monitoring is configured), and startup only fails if NO port binds. Order is not significant: a listener that later stops serving takes the process down whichever position it holds.
+SQLITE_PATH=                          # main DB path, defaults to ./traceway.db in the working directory. The telemetry DB derives from it (_telemetry.db, or _telemetry.duckdb under -tags telemetry_duckdb).
+APP_BASE_URL=                         # public origin of this server (e.g. https://traceway.example.com). Used as the OAuth issuer / device verification URL and SSO redirect base, and to absolutize the deep links in notifications. If unset, the device-auth + well-known endpoints derive it per-request from the Host / X-Forwarded-* headers; set it explicitly behind a proxy that doesn't forward Host.
+TRUSTED_PROXIES=                      # comma-separated IPs/CIDRs whose X-Forwarded-For/X-Real-IP gin trusts for c.ClientIP() (every per-IP rate limiter keys on it, and `/api/report` stores it on every session as `client.ip`). Unset = loopback only, so no peer can spoof its IP. Private ranges are deliberately NOT trusted by default: on a Docker/k8s network every peer has a private address, the clients included when the port is published directly, so trusting RFC1918 would let any of them forge XFF past every per-IP limiter. Set it to the CIDRs of whatever sits in front (a proxy container's compose network, the ingress pod range, the CDN ranges); otherwise every visitor shares one rate-limit bucket keyed on the proxy. The value REPLACES the default, so it must name every hop in the chain, not just the outermost (a CDN-only list leaves a private ingress untrusted and disables XFF entirely); `*` trusts every peer. A malformed entry exits 1 at startup with a FATAL message, before the database is opened (`trustedProxyNets`, cmd/run.go). The first request carrying X-Forwarded-For/X-Real-IP from a peer outside the list logs a one-time warning naming that peer (`warnOnUntrustedForwardedFor`, cmd/run.go), which is how a forgotten proxy hop shows up. Parsing lives in `Cfg.TrustedProxyList` (config.go), covered by config_test.go.
+TRUSTED_PROXY_HEADER=                 # optional header taken verbatim as the client IP on every request (gin TrustedPlatform: X-Real-IP behind ingress-nginx, CF-Connecting-IP behind Cloudflare); it wins over TRUSTED_PROXIES and turns the untrusted-forwarder warning off. Only safe when every request provably passes through a proxy that overwrites the header.
+UPLOAD_MAX_CONCURRENT=4               # concurrent /api/sourcemaps/upload + /api/symbols/upload requests; excess waits 30s then gets 503. Separate from INGEST_MAX_CONCURRENT so a CI upload burst cannot starve telemetry ingest. Each upload holds a whole file in memory while parsing, so this bounds peak upload memory at roughly concurrency x largest file. It is a count-based gate, not a memory budget: on a memory-capped container size it from the limit rather than trusting the default. Same gate and bounded waiting room as ingest, its own instance. The source-map warm-up that follows an upload (`services.GenerateTWArtifacts`) runs outside this gate on its own 2-worker pool with a 64-job queue: the stale `.tw` artifact is deleted and the cache invalidated inline, the rebuild is queued, identical pending jobs are coalesced, and a full queue drops the warm-up (rate-limited `CaptureException`) because lookups build a missing artifact on demand anyway.
+REPORT_MAX_BODY_MB=64                 # cap on the DECOMPRESSED /api/report and /api/profiles/ingest body (middleware.UseGzip bounds both the raw and gunzipped stream, so gzip cannot raise it). Deliberately far above the 10MB OTLP cap: session-replay frames carry rrweb segments and are a different size class, and the shipped browser SDKs re-queue a rejected batch forever, so a reachable cap is a permanent wedge rather than shed load. Overruns answer 413.
 CLICKHOUSE_SERVER=localhost:9000
 CLICKHOUSE_DATABASE=traceway
 CLICKHOUSE_USERNAME=default
@@ -245,13 +275,52 @@ POSTGRES_USERNAME=traceway
 POSTGRES_PASSWORD=
 POSTGRES_SSLMODE=disable
 
+# DuckDB telemetry backend (only with -tags telemetry_duckdb build; see "DuckDB Telemetry Backend" below)
+DUCKDB_MEMORY_LIMIT=                  # e.g. 4GB. Unset = DuckDB auto-tunes (~80% RAM). Set explicitly in memory-capped containers to avoid OOM.
+DUCKDB_THREADS=                       # e.g. 4. Unset = DuckDB auto-tunes (= cores). Cap in constrained/shared environments.
+DUCKDB_CHECKPOINT_THRESHOLD=          # e.g. 256MB. Unset = DuckDB default (16MB). Raise under sustained ingest to reduce WAL checkpoint stalls; costs a larger WAL and longer restart replay.
+
+# Ingest admission gate (all telemetry ingest endpoints: /api/report, /api/profiles/ingest, /api/otel/*)
+INGEST_MAX_CONCURRENT=                # max concurrently processed ingest requests. Unset = 2×CPU cores, min 4. Bounds ingest memory so overload sheds load with 503s instead of the process being OOM-killed (on DuckDB an OOM death is followed by a minutes-long WAL-replay stall on restart). The gate (`newAdmissionGate` in `middleware/ingest_admission.go`, a buffered-channel semaphore) also bounds waiters at 4×capacity (min 16); beyond that a request gets an immediate 503 instead of parking a goroutine and a timer for the wait window.
+INGEST_ADMISSION_WAIT_SECONDS=5       # how long a request may wait for a slot before the 503 + Retry-After; 0 = reject immediately when saturated
+
+# Email
+EMAIL_PREVIEW_ENABLED=false           # "true" registers GET /api/email-preview[/:template], rendering every email template with sample data for design review. Off by default; never enable in production.
+
+# Notifications
+NOTIFICATION_POLL_SECONDS=60          # polled rule evaluation interval; minimum 5, invalid values fall back to 60
+ONCALL_POLL_SECONDS=30                # on-call escalation worker interval; minimum 5, invalid values fall back to 30. Kept separate from NOTIFICATION_POLL_SECONDS so raising rule-evaluation intervals never delays paging. A buffered Wake() channel makes freshly opened pages notify L1 near-instantly regardless of this interval.
+OUTBOX_POLL_SECONDS=15                # notification outbox drain interval; minimum 5, invalid values fall back to 15. The outbox (backend/app/outbox, notification_outbox table in the main DB) is the persist-then-send layer for ALL notifications: rule dispatch and the escalator only enqueue (with an adapter-config snapshot) inside their transactions; the drain worker sends with retries (backoff 1m/5m/15m/60m, 5 attempts, then terminal failed + CaptureException). Crash-safe at-least-once: stale 'sending' rows are reclaimed after 5 min, cancelled rows can never resurrect (guarded status transitions), ack/resolve cancels queued page deliveries via outbox.CancelByKey. Cooldown and event-rule dedup record at enqueue commit (the durable promise), and fired_notifications is written at the terminal outcome. /api/health/deep exposes an `outbox` block; `traceway.outbox.*` metrics are emitted when monitoring is on; terminal rows are pruned daily (sent/cancelled 7d, failed 30d).
+
+# Synthetics (synthetic uptime monitoring: backend/app/synthetics, /synthetics frontend route)
+SYNTHETICS_POLL_SECONDS=15            # scheduler tick for due checks; minimum 5, invalid values fall back to 15. The scheduler enqueues due checks into the check_runs queue (main DB, outbox-style guarded claims, advisory lock 824737004) and records expired queued runs as `missed` in telemetry — a probe is never executed late. In-process executors claim http/tcp runs always, browser runs only when mode=embedded.
+SYNTHETICS_BROWSER_MODE=off           # off | embedded | remote. Browser checks are real @playwright/test specs executed by spawning Node against a harness dir (no npm/npx at runtime; allowlisted env so user scripts never see server secrets). `embedded` requires the :browser image (Dockerfile.browser, DuckDB base + Node + Chromium) and fails fast at startup otherwise; `remote` queues browser runs for traceway-runner binaries that long-poll /api/runners/poll authenticating with SYNTHETICS_RUNNER_SECRET. Hard-blocked in cloud mode (startup panic + 422 at check creation).
+SYNTHETICS_BROWSER_SANDBOX=auto       # auto | bwrap | off. Isolation for the Playwright subprocess in embedded mode and in traceway-runner. The env allowlist alone does not contain a spec: node runs as the same uid as its parent, so unconfined it can read the parent's /proc/<pid>/environ (the runner secret), overwrite node_modules in the shared harness to backdoor later runs, and read a sibling run's directory. `bwrap` gives each run its own pid/ipc/uts/user namespace with a fresh /proc, a read-only harness bind with only that run's dir writable, an empty tmpfs over the .runs container so sibling run dirs are hidden (not exposed by the wholesale harness bind), and no /etc beyond DNS/CA/locale (so a secret in the unit file or EnvironmentFile is unreachable); the network namespace stays shared since probes must reach the internet. `auto` uses bubblewrap when the host can and degrades to off with a warning; explicit `bwrap` fails fast at startup instead. Resolved once via browserexec.ResolveSandbox, which probes by running `node --version` through the real bind set.
+SYNTHETICS_RUNNER_SECRET=             # shared bearer credential for the operator's runner fleet; required for remote mode (fail-fast at startup). Runners are deployment infrastructure, NOT tenant entities: no dashboard CRUD, no per-runner tokens. A runner self-registers a liveness row in synthetic_runners under its X-Traceway-Runner-Name on first poll (upsert throttled to 1/min via an in-memory cache; claim identity is "runner:<name>"). Rotation = change the secret + restart runners. Runner-side env: TRACEWAY_URL, TRACEWAY_RUNNER_SECRET, TRACEWAY_RUNNER_NAME (default hostname), RUNNER_WORKERS (default 2, max 16), and optional TRACEWAY_RUNNER_MONITORING (<project_token>@<url>/api/report) which self-instruments the runner with the Traceway Go SDK: default server metrics, a "browser_run" task trace per executed run (tags check_id/run_id/status, server_name = runner name), and CaptureException on infra failures (start/report errors, per-job panics recovered without killing the worker).
+HEALTH_DEEP_TOKEN=                    # operator bearer secret gating GET /api/health/deep (its payload is instance-wide: cross-tenant queue depth, runner fleet, storage engine stats). Unset = endpoint disabled with a 401 pointing here.
+SYNTHETICS_HTTP_CONCURRENCY=8         # concurrent in-process http/tcp probes
+SYNTHETICS_BROWSER_CONCURRENCY=2      # concurrent Chromium instances in embedded mode (~300-500MB each)
+SYNTHETICS_ALLOW_PRIVATE_TARGETS=true # "false" rejects checks that resolve to private/LAN addresses, validated at save AND at dial time for both http and tcp probes (netguard.GuardedDialContext dials the vetted IP, DNS-rebinding safe). Forced false in cloud mode regardless of env (tenants must never probe the platform's network). Default allow elsewhere: probing LAN services is a core self-hosted use case. When the guard is off, http probes honor HTTP(S)_PROXY; when on, the proxy is ignored so the guard vets the real target. Check creation also runs controllers.CheckLimitHook (nil = unlimited; cloud caps monitors per org plan).
+SYNTHETICS_PLAYWRIGHT_DIR=/opt/traceway-playwright   # Playwright harness dir (node_modules with pinned @playwright/test; docker/playwright/package.json pins the version)
+SYNTHETICS_SCREENSHOT_RETENTION_DAYS=30 # browser failure artifacts under STORAGE_PATH/synthetics/ (.png screenshots AND .log Playwright output tails — failed browser runs store both, referenced by screenshot_key/output_key on check_results, served via GET /api/synthetics/screenshot|output?key= with project prefix checks); local storage only, 0 disables the cleanup worker
+
 # Retention (see "Data Retention" section below)
 SQLITE_RETENTION_DAYS=30              # 0 to disable; only applies in SQLite mode
+DUCKDB_RETENTION_DAYS=30              # telemetry TTL on the DuckDB backend; when set it wins over SQLITE_RETENTION_DAYS there, when unset SQLITE_RETENTION_DAYS applies as fallback; 0 to disable
+LOG_RECORDS_MAX_ROWS=                 # optional cap on log_records rows; unset/0 = disabled. NOT a hard limit: a cleanup worker trims to the newest N rows once per minute, so ingest above N rows/minute overshoots the cap between runs. Only applies in SQLite mode (SQLite or DuckDB telemetry)
 SESSION_RECORDING_RETENTION_DAYS=30   # 0 to disable; only applies when STORAGE_TYPE=local
+PROFILE_ARCHIVE_RAW=false             # native pprof ingest only: write the original pprof bytes to object storage as a lossless archive
+PROFILE_RETENTION_DAYS=30             # 0 to disable; on-disk archive TTL, only with PROFILE_ARCHIVE_RAW + STORAGE_TYPE=local
 
 # Session recording uploads (see "Session Recording Uploader" section below)
 SESSION_RECORDING_UPLOAD_WORKERS=32   # 0 to disable uploads entirely
 SESSION_RECORDING_UPLOAD_QUEUE_SIZE=2048
+
+# Source map symbolicator
+SYMBOLICATOR_PARSER=goja              # goja (default) or oxc (requires -tags oxc build, see scripts/build-oxc-shim.sh)
+SOURCEMAP_CACHE_TYPE=memory           # memory (default) or disk (mmap-backed .tw cache)
+SOURCEMAP_DISK_CACHE_PATH=./twcache   # only used when SOURCEMAP_CACHE_TYPE=disk
+SOURCEMAP_DISK_CACHE_MAX_MB=2048      # capacity-based LRU eviction of local .tw files
 ```
 
 ---
@@ -269,6 +338,13 @@ Dashboard ← [SvelteKit Frontend] ← JSON API ← Gin Controllers
 Two-tier system:
 1. **Client Auth**: Project bearer tokens (SDK telemetry via `Authorization: Bearer <project_token>`)
 2. **App Auth**: JWT-based user authentication (dashboard via `Authorization: Bearer <jwt_token>`)
+
+**App Auth credentials.** `UseAppAuth` accepts three credential shapes on the `Authorization: Bearer` header:
+- **Dashboard JWT** — issued by `/api/login` / SSO (7-day expiry).
+- **Personal access token (PAT)** — opaque `twp_`-prefixed token; looked up by SHA-256 hash in `personal_access_tokens`, resolves to its user. Created/listed/revoked from the account page (`/api/personal-access-tokens*`). Non-expiring or with an optional TTL; `last_used_at` is touched (throttled to 1/min, off the request path).
+- **Device-flow access token** — a short-lived (15-min) JWT minted by the CLI's OAuth device flow.
+
+**CLI / OAuth device flow** (`backend/app/services/authserver/`, controllers `device_auth.controller.go` / `wellknown.controller.go` / `pat.controller.go`): RFC 8628 device authorization grant plus rotating refresh tokens. `traceway login` (default) → `POST /api/auth/device/authorize` (client_id allowlisted, per-IP rate-limited, opportunistically prunes expired rows) → user approves at `/device` → the CLI polls `POST /api/auth/device/token` (grant `device_code`; `/api/auth/token` is an equivalent alias) which issues a 15-min access token + 90-day rotating refresh token (family-tracked in `refresh_tokens`). Refresh (`grant_type=refresh_token`) rotates the token atomically and revokes the whole family on genuine reuse; within a 30s grace window a benign concurrent retry is answered with the same rotated token set (from an in-memory rotation cache) instead of `invalid_grant`. `POST /api/auth/logout` revokes a family server-side. Tokens are stored SHA-256-hashed. The grant endpoints **self-manage their transactions** via `db.ExecuteTransaction` (not `middleware.Transactional`) because OAuth returns 400 for normal flow control (`authorization_pending`, reuse-revoke) and those side effects must still commit. `/.well-known/oauth-authorization-server` and `/.well-known/oauth-protected-resource` are served at the **origin root** (registered in `cmd/run.go`, not the `/api` group) per RFC 8414 / 9728. Beyond the device grant, the server implements the **authorization-code + PKCE grant** (S256 only) with **RFC 7591 dynamic client registration** for MCP clients: `POST /api/oauth/register` (rate-limited, open registration of public clients; https/custom-scheme redirect URIs anywhere, plain http only on loopback with port-flexible matching per RFC 8252) -> the client sends the user to `/oauth/authorize` (an SPA consent page like `/device`) -> the page calls `GET /api/oauth/client` + `POST /api/oauth/approve|deny` (approve mints a single-use 5-min `twa_` code bound to user/client/redirect/challenge; the redirect target is validated server-side) -> the client exchanges it at `POST /api/auth/token` (grant `authorization_code`; the code is consumed even on a failed exchange, wrong verifier/client/redirect are all `invalid_grant`). RFC 8707 `resource` params are validated against the issuer origin (`invalid_target`). Expired codes are pruned by the auth-tokens retention worker and opportunistically at approve time.
 
 ---
 
@@ -454,7 +530,12 @@ const handleClick = createRowClickHandler('/issues/abc123', 'preset', 'from', 't
 /endpoints/[endpoint]       Single endpoint details
 /tasks                      Background tasks list
 /tasks/[task]               Single task details
-/metrics                    System metrics dashboard (CPU, memory, etc.)
+/dashboards                 Dashboards page (tabs of org dashboards; /metrics redirects here)
+/monitors                   Monitors (synthetic checks): single sidebar item, TabsRow tabs Monitors | Status Pages | Post-Mortems (?tab=, Status Pages admin-only, Post-Mortems for all members); status pages tab has branding (description, logo upload, custom domain) plus a link to the per-page incidents page (which owns the Record Incident dialog); old /monitors/status-pages redirects to the tab, /monitors/runners to /monitors (runners have no UI — operator infra), bare /monitors/post-mortems to the tab
+/monitors/status-pages/[pageId]/incidents  Paginated incident management for one status page (timeline updates, titles, manual resolve/delete, post-mortem links); reads for members, mutations admin-gated in the UI
+/monitors/[checkId]         Monitor detail (latency chart, uptime bars, runs w/ result filter, incidents w/ titles + post-mortem links)
+/monitors/post-mortems/[id] Post-mortem editor/viewer (@milkdown/crepe WYSIWYG with a Rich text/Markdown raw toggle, tag pills + Add-tags dialog, incident link pill + searchable picker, Activity sheet; write gating follows the effective project role). Project-scoped: opening a doc under a different project 404s. Creation is a title-only dialog (new-post-mortem-dialog.svelte, openable from the tab, monitor detail incidents, and the status page incidents page with an optional incident pre-link) that POSTs immediately and navigates here; /monitors/post-mortems/new redirects to the tab
+/status/[slug]              Public status page (light standalone design, no auth, raw fetch, listed in isPublicPath)
 /connection                 SDK integration guide
 ```
 
@@ -478,7 +559,11 @@ Uses shadcn-svelte registry with bits-ui primitives. Key components:
 ### Project Structure
 ```
 backend/
-├── main.go                     # Entry point, DB init, server start
+├── traceway.go                 # package tracewaybackend - embeddable API (Run, WithPort, ...)
+├── cmd/
+│   ├── run.go                  # Run() implementation: DB init, routes, server start
+│   ├── traceway/main.go        # Binary entry point (package main)
+│   └── traceway-runner/        # Synthetics remote runner binary
 ├── app/
 │   ├── controllers/
 │   │   ├── routes.go           # Route registration
@@ -496,7 +581,7 @@ backend/
 │   ├── middleware/
 │   │   ├── auth.go             # Token validation
 │   │   └── gzip.go             # Request decompression
-│   ├── cache/                  # In-memory project token cache
+│   ├── cache/                  # In-memory project cache; on Postgres, replicas refresh each other through LISTEN/NOTIFY (project_cache_changed, sent by the project repository inside the write transaction)
 │   ├── pgdb/                   # PostgreSQL connection manager
 │   └── migrations/
 │       ├── ch/                 # ClickHouse migrations
@@ -512,8 +597,12 @@ backend/
 | PostgreSQL CRUD (read) | `UseAppAuth, RequireProjectAccess, Transactional` |
 | PostgreSQL CRUD (write) | `UseAppAuth, RequireProjectAccess, RequireWriteAccess, Transactional` |
 | Admin org management | `UseAppAuth, RequireAdminAccess, Transactional` |
-| Public (auth/invitations) | `Transactional` only |
+| Public (auth/invitations) | `RateLimitPerIP`, `BufferAuthBody`, `Transactional` (limiter first so a throttled request never reads a body or opens a transaction) |
 | Client SDK ingestion | `CORSReport, UseClientAuth, UseGzip` |
+| Synthetic runner API | `UseRunnerAuth` only (shared SYNTHETICS_RUNNER_SECRET bearer + self-registration by X-Traceway-Runner-Name; no Transactional — poll holds the request up to 25s) |
+| Public status page | `RateLimitPerIP` only |
+
+**Global middleware** (registered in `cmd/run.go` ahead of the routes): `middleware.GuardBodyReads` (every request body gets the progress guard, 30s idle / 10 min total / 1 KB/s floor after 20s, answering through `middleware.BodyReadError` as 408; routes with their own budget call `GuardBodyRead` again, which re-arms the same guard rather than wrapping twice, so uploads get 30s/30 min, `/api/report` 20s/10 min and OTLP 20s/2 min. The guard clears the socket read deadline the moment the body is complete: Go's background connection read would otherwise time out and cancel the request context of any handler that outlives the idle window. The `http.Server` `ReadTimeout` is a 1h backstop that only applies while a body is still arriving (the guard lifts it for bodiless requests too, so a long-lived handler such as the MCP `GET /mcp` stream is not cancelled after an hour), `ReadHeaderTimeout` is 15s), `configureClientIP` (gin's trusted proxies from `Cfg.TrustedProxyList`, plus `TrustedPlatform` from `TRUSTED_PROXY_HEADER`; a malformed list panics), `warnOnUntrustedForwardedFor` (list mode only: one-time log when a forwarding header arrives from a peer outside `TRUSTED_PROXIES`), and `middleware.SecurityHeaders` (`X-Frame-Options: DENY`, CSP `frame-ancestors 'none'; base-uri 'self'; form-action 'self'`, `Referrer-Policy`, `nosniff`). The two frame headers are skipped for any `/status/*` or `/api/status/*` path so public status pages stay embeddable in an iframe. A status page served at the root of a custom domain is not exempt: the same root serves the logged-in dashboard on every hostname the backend answers on, so it must not be frameable there.
 
 ### API Endpoints
 
@@ -524,6 +613,7 @@ backend/
 | POST | `/api/otel/v1/traces` | Client | OTLP/HTTP trace ingestion |
 | POST | `/api/otel/v1/metrics` | Client | OTLP/HTTP metric ingestion |
 | POST | `/api/otel/v1/logs` | Client | OTLP/HTTP log ingestion |
+| POST | `/api/otel/v1development/profiles` | Client | OTLP/HTTP profile ingestion (development signal) |
 
 **Auth & Registration**
 | Method | Endpoint | Auth | Purpose |
@@ -535,11 +625,36 @@ backend/
 | GET | `/api/password-reset/:token` | None | Validate reset token |
 | POST | `/api/password-reset/:token` | None | Reset password with token |
 
+**CLI Device Auth & OAuth** (see the Authentication section above)
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| POST | `/api/auth/device/authorize` | None | Start device flow; returns device/user code + verification URL |
+| POST | `/api/auth/device/token` | None | Poll for the token (grant `device_code`); also accepts `refresh_token`. Shares a 60/min per-IP limiter with `/api/auth/token`; over it a `device_code` grant answers the RFC 8628 `400 slow_down` (`RateLimitOAuthTokenPerIP` peeks `grant_type` from the buffered body), so the shipped CLI backs off instead of aborting the login, while every other grant gets a plain `429` + `Retry-After` because `slow_down` is undefined for them and OAuth clients treat an unknown 400 as terminal. Body capped at 64KB by `BufferAuthBody` like the other anonymous auth routes |
+| POST | `/api/auth/token` | None | Token endpoint: `device_code`, `refresh_token` or `authorization_code` grant (JSON or form-encoded). Same shared limiter, grant-aware rejection and 64KB body cap as the device token route |
+| POST | `/api/auth/logout` | None | Revoke the presented refresh token's family (idempotent) |
+| GET | `/api/device` | App | Look up a user code for the approval screen |
+| POST | `/api/device/approve` | App | Approve a pending device authorization (tokens carry only the approving user's own role, so no write guard) |
+| POST | `/api/device/deny` | App | Deny a pending device authorization |
+| POST | `/api/oauth/register` | None | RFC 7591 dynamic client registration (rate-limited) |
+| GET | `/api/oauth/client` | App | Resolve a client_id to its display name (consent page) |
+| POST | `/api/oauth/approve` | App | Approve an authorization request; mints the code, returns the validated redirect |
+| POST | `/api/oauth/deny` | App | Deny an authorization request; returns the error redirect |
+| GET | `/.well-known/oauth-authorization-server` | None | RFC 8414 metadata (served at origin root, not `/api`) |
+| GET | `/.well-known/oauth-protected-resource` | None | RFC 9728 metadata (served at origin root, not `/api`) |
+| GET/POST/DELETE | `/mcp` | Bearer | Streamable HTTP MCP server (origin root); 401s carry a `WWW-Authenticate` resource-metadata challenge |
+
+**Personal Access Tokens**
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| POST | `/api/personal-access-tokens` | App | Create a PAT (returns the `twp_` token once) |
+| GET | `/api/personal-access-tokens` | App | List the current user's active PATs |
+| DELETE | `/api/personal-access-tokens/:id` | App | Revoke a PAT |
+
 **Projects**
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
 | GET | `/api/projects` | App | List projects |
-| POST | `/api/projects` | App+Write | Create project |
+| POST | `/api/projects` | App | Create project (optional `organizationId` body field targets another org; the handler checks the caller's **org role** in the target org and 403s for non-members/`readonly`; creation is org-scoped, so per-project overrides neither grant nor deny it) |
 | POST | `/api/projects/source-map-token` | App+Write | Generate source map upload token |
 
 **Dashboard**
@@ -555,23 +670,46 @@ backend/
 | GET | `/api/metrics/application` | App | Application metrics |
 | GET | `/api/metrics/stats` | App | Stats metrics |
 | GET | `/api/metrics/server` | App | Server metrics |
-| POST | `/api/metrics/query` | App | Custom metric queries |
+| POST | `/api/metrics/query` | App | Custom metric queries. Aggregations avg/min/max/sum/count/last plus `rate`, which differences every series (full tag set = identity) against its previous sample, drops resets, and sums the deltas per bucket as a per-second rate; the reported unit gains `/s` (`By/s`), a counter of seconds becomes the ratio `1`, and on ClickHouse `rate` follows `selectTable` like every other aggregation: past 6h it reads the rollups through `maxMerge(max_val)` (a counter only grows, so a rollup bucket's max is its last sample), never `metric_points_1d`, with the chart bucket clamped to the rollup step and the lookback widened by it (`rateSource`). The `traceway-otel-agent` template relies on it (plus `state` filters, `groupBy: server_name`, and the per-source `complement` flag that the widget renderer applies as 1 − value); `backfill.RunOtelAgentDashboardSources` upgrades installed copies whose widgets still carry the original plain-average source. Bounded in `metric_query.controller.go`: 256KB body, max 50 queries and 20 tag filters each, range at most 731 days and `to >= from` (422), buckets widened so no series exceeds 2000 points (the effective `intervalMinutes` is returned at the top level of the response), at most 200 groups per query (the repositories return one extra so the result carries `truncatedGroups: true`), and a 30s deadline for the whole request that answers 504. The discovery endpoints validate their `from`/`to` the same way |
 | GET | `/api/metrics/discover` | App | Discover available metrics |
 | GET | `/api/metrics/discover/tags` | App | Discover metric tags |
+| GET | `/api/metrics/discover/instances` | App | Distinct `server_name` values in a range (dashboard instance filter) |
 | PUT | `/api/metrics/registry` | App+Write | Update metric registry entry |
 
-**Widget Groups & Widgets**
+**Dashboards & Templates**
+
+Dashboards are org-owned JSON documents (`{schemaVersion, widgets: [{id, title, widgetType, config}]}`, widget ids are server-generated `w_xxxxxxxx` strings, array order = display order) applied to projects via `project_dashboards`. Dashboard mutations require org role above `readonly` (checked in-handler); project-scoped routes (list/star/reorder/populate) use the standard middleware chains; apply/unapply also check the effective role of each affected project. The old per-project widget-group tables are converted once at startup by `backfill.RunDashboards` (advisory-locked on PG) and retained for rollback.
+
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
-| GET | `/api/widget-groups` | App | List widget groups |
-| POST | `/api/widget-groups` | App+Write | Create widget group |
-| GET | `/api/widget-groups/:id` | App | Get group with widgets |
-| PUT | `/api/widget-groups/:id` | App+Write | Update widget group |
-| DELETE | `/api/widget-groups/:id` | App+Write | Delete widget group |
-| POST | `/api/widget-groups/:id/widgets` | App+Write | Add widget |
-| PUT | `/api/widget-groups/:id/widgets/:wid` | App+Write | Update widget |
-| PUT | `/api/widget-groups/:id/widgets/:wid/move` | App+Write | Reorder widget |
-| DELETE | `/api/widget-groups/:id/widgets/:wid` | App+Write | Delete widget |
+| GET | `/api/dashboards` | App | Dashboards applied to the project (tab order) |
+| GET | `/api/dashboards/library` | App | All dashboards across the user's orgs with applied project ids |
+| POST | `/api/dashboards` | App | Create in org (auto-applies to current project unless `applyToProjectIds` given) |
+| GET | `/api/dashboards/:id` | App | Meta + widgets (+ per-project `isStarred`, `appliedProjectIds`) |
+| PUT | `/api/dashboards/:id` | App | Update name/description and/or full `definition` (the as-code path) |
+| DELETE | `/api/dashboards/:id` | App | Delete everywhere (assignments + stars cascade) |
+| PUT | `/api/dashboards/:id/apply` | App | Set the full project assignment list |
+| DELETE | `/api/dashboards/:id/apply/:projectId` | App | Unassign from one project |
+| POST | `/api/dashboards/:id/copy` | App | Copy (also cross-org) with optional apply |
+| PUT | `/api/dashboards/reorder` | App+Write | Tab order for a project (explicit id order) |
+| POST | `/api/dashboards/:id/widgets` | App | Add widget |
+| PUT | `/api/dashboards/:id/widgets/reorder` | App | Reorder widgets (explicit id order) |
+| PUT | `/api/dashboards/:id/widgets/:wid` | App | Update widget |
+| DELETE | `/api/dashboards/:id/widgets/:wid` | App | Delete widget (+ its stars) |
+| PUT | `/api/dashboards/:id/widgets/:wid/star` | App+Write | Star/unstar for the project homepage |
+| GET | `/api/dashboards/starred` | App | Starred widgets with homepage layout |
+| PUT | `/api/starred-widgets/reorder` | App+Write | Reorder homepage starred widgets (`{ids}` = starred row ids) |
+| PUT | `/api/starred-widgets/:id` | App+Write | Update homepage layout (colSpan/size) |
+| GET | `/api/dashboards/:id/export` | App | Export one dashboard as JSON |
+| GET | `/api/dashboards/export?organizationId=` | App | Export the org bundle |
+| POST | `/api/dashboards/import` | App | Import doc/bundle (`mode: create\|upsert`, upsert matches by name) |
+| POST | `/api/dashboards/import/grafana` | App | Convert a Grafana export (best-effort, returns `warnings[]`) |
+| GET | `/api/dashboard-templates` | App | Marketplace list/search (`search`, `category` params) |
+| POST | `/api/dashboard-templates/:key/install` | App | Copy a template into the org and apply |
+| POST | `/api/dashboards/populate-defaults` | App+Write | Install the framework-default template set for an empty project |
+| GET | `/api/metrics/discover/org` | App | Metric names across all org projects (command palette) |
+
+Templates are DB rows seeded by migrations (`traceway-otel-agent` for the OTel host agent, `golang` for Go SDK apps, `traceway-clickhouse`/`traceway-duckdb` for the telemetry stores of a monitored Traceway instance; SQLite emits no store-specific metrics so it has no template); cloud can insert more rows without a release. The OTLP metric ingest allowlists per-resource identity and grouping tags (`host.name`, `host.id`, `os.type`, `cloud.region`, `container.name`, `k8s.cluster.name`, `k8s.pod.name`, `k8s.node.name`, `postgresql.database.name`, ...) in `otelcontrollers/metric_converter.go` for infrastructure views and custom widgets.
 
 **Endpoints**
 | Method | Endpoint | Auth | Purpose |
@@ -601,14 +739,47 @@ backend/
 | POST | `/api/exception-stack-traces/by-id/:exceptionId` | App | Single exception by ID |
 | POST | `/api/exception-stack-traces/:hash` | App | Exception by hash |
 
+**AI Traces & Conversations**
+
+One `ai_traces` row per LLM call (any OTLP span with `gen_ai.*` attributes). Each row carries a `conversation_id` resolved at ingest (`gen_ai.conversation.id` -> `session.id` span/resource attr -> distributed trace id -> empty), `tool_call_count`/`tool_names` parsed from the completion payload (OpenAI `tool_calls`, Anthropic `tool_use`, OTel output messages, `gen_ai.tool.*` fallback), and `flagged`/`flagged_terms` from an ingest-time word-boundary scan of prompt+completion against per-project selected built-in language packs (`projects.ai_flagged_languages`, default `["en"]`; packs live in `backend/app/services/contentflag/terms/*.txt` — en/de/es/fr/it/pt/sr; empty array = custom terms only) plus per-project custom terms (`projects.ai_flagged_terms`); both edited in the project settings AI tab and cached via the project cache. All three project-creation paths (`Create`, `CreateWithOrganization`, `cmd/seed.go`) must set `AiFlaggedLanguages` explicitly since lit inserts every struct field. `tool_names`/`flagged_terms` are stored comma-separated (values sanitized at ingest); the content matcher lives in `backend/app/services/contentflag/`. Conversation analytics exclude rows with an empty `conversation_id`; user analytics additionally require a non-empty `user_id`.
+
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| POST | `/api/ai-traces/grouped` | App | AI traces grouped by trace name |
+| POST | `/api/ai-traces/trace` | App | Calls for one trace name (`?traceName=`) |
+| POST | `/api/ai-traces/:traceId` | App | Single call detail + conversation blob |
+| POST | `/api/ai-conversations/grouped` | App | Conversations (GROUP BY conversation_id): turns, cost, tokens, tools, models, flagged; filters userId/model/toolName/flaggedOnly/search (search matches conversation id, user, model, tool names, and flagged terms; row-level filters are semi-joins on conversation_id so a match on any turn returns the whole conversation's aggregates); response also carries `thresholds` (range-wide P95 cost/turns for outlier highlighting) and `facets` (models, tools) |
+| POST | `/api/ai-conversations/conversation` | App | All turns of one conversation (id in body) ordered by recorded_at, each with its stored input/output payload (capped at 200 turns of payloads), plus stats |
+| POST | `/api/ai-users/grouped` | App | Per-user conversation analytics: conversation count, total calls, avg/min/median turns, avg cost per conversation, total cost, flagged conversation count |
+
+Frontend routes: `/ai-traces` (tabs: Traces, Conversations, Users), `/ai-traces/conversations/[conversationId]` (chat timeline with tool calls rendered). Trace names `conversations` and `users` are shadowed by these static routes. Notification rule types `ai_trace_cost` (per call), `ai_conversation_cost` (24h cumulative per conversation), and `ai_flagged_content` (flagged term match, optional term filter) are event-driven; remember both `notification_rule.repository.go` copies list event rule types explicitly.
+
 **Organization Management**
 | Method | Endpoint | Auth | Purpose |
 |--------|----------|------|---------|
+| POST | `/api/organizations` | App | Create an organization owned by the caller; the recovery path for a user removed from their last organization (self-hosted: 422 once one exists; cloud: `OrganizationLimitHook`). Runs `PostRegistrationHooks` like register and SSO finish-setup |
 | GET | `/api/organizations/:orgId/settings` | Admin | Get org settings |
 | PUT | `/api/organizations/:orgId/settings` | Admin | Update org settings |
 | GET | `/api/organizations/:orgId/members` | Admin | List members |
 | PUT | `/api/organizations/:orgId/members/:userId` | Admin | Update member role |
 | DELETE | `/api/organizations/:orgId/members/:userId` | Admin | Remove member |
+| GET | `/api/organizations/:orgId/members/:userId/project-roles` | Admin | List member's per-project role overrides |
+| PUT | `/api/organizations/:orgId/members/:userId/project-roles/:projectId` | Admin | Set/clear a per-project role override |
+
+**Organization Overview** (frontend routes `/organization` = Servers, `/organization/issues`, `/organization/monitors`, `/organization/on-call`, `/organization/projects`)
+
+Org-wide read views that fan out over every project of the org, in `organization_overview.controller.go`. `RequireOrganizationAccess` (any org role) gates them; the servers/issues/monitors handlers deliberately skip `Transactional` because they run per-project telemetry queries and must not hold the single-connection SQLite main DB across them (they open their own short `db.ExecuteTransaction` for the project list first). The pure main-DB pages endpoint keeps `Transactional`. The frontend renders the organization routes in the same sidebar shell as project pages, with the sidebar switched to organization items (Servers, Issues, Monitors, On-Call, Projects under an "Organization" label; badges come from `/overview/counts`). The selected organization is the shared `organizationContext` in `frontend/src/lib/state/organization-context.svelte.ts` (the `organizationId` query param, else the first membership), and `src/routes/organization/+layout.svelte` owns the redirects: a single-project org into that project, legacy `?tab=` links to the new paths, and frontend-only orgs from Servers/Monitors to Issues. Login auto-lands on `/organization` when the first org has more than one project (`frontend/src/lib/utils/landing.ts`). A single-project organization never shows the view: `/organization` redirects into that project and the switcher renders the org as a plain label, since the project's own pages already cover everything it would aggregate. When none of the org's projects is a backend project (`isBackendFramework` in `projects.svelte.ts`, i.e. every project is a browser or mobile framework), the Servers and Monitors sidebar items are hidden and `/organization` redirects to `/organization/issues`.
+
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| GET | `/api/organizations/:organizationId/overview/servers` | Member | One row per `server_name` per project over the last 30 min: CPU/memory/disk/network + a CPU sparkline, plus host/os/cloud/k8s metadata lifted from metric tags. Reads OTel hostmetrics (`system.cpu.utilization` state=idle inverted, `system.memory.utilization` state=used, `system.filesystem.utilization` state=used, `system.network.io` by direction) and falls back to the legacy SDK names (`cpu.used_pcnt`, `mem.used`/`mem.total`). A project that fails to read sets `partial: true` instead of failing the request |
+| POST | `/api/organizations/:organizationId/overview/issues` | Member | Paginated issues across all projects. Body mirrors `/api/exception-stack-traces` (`fromDate`, `toDate`, `orderBy`, `search`, `searchType`, `pagination`); every project contributes its top `page*pageSize` groups in the requested order and the page is a slice of their merged order, so it equals what one combined project would return. That per-project fetch is capped at 1000 rows (`orgOverviewMaxIssueFetch`): a deeper page answers 422 and `totalPages` is clamped so the footer never offers one; `FindGrouped` orders ties by `exception_hash` on every backend so the merge is stable across pages. Returns `{data, pagination, partial}` with 24h hourly trends attached; a project that fails to read sets `partial: true` like the servers endpoint |
+| POST | `/api/organizations/:organizationId/overview/pages` | Member | Paginated on-call pages across all projects: body `{status, search, fromDate, toDate, pagination}` (status active/open/acknowledged/resolved, search over subject + rule name, range on `created_at`); returns `{data, pagination, openPagesCount}` |
+| GET | `/api/organizations/:organizationId/overview/counts` | Member | `openPagesCount` + `downMonitorsCount` for the organization sidebar badges |
+| POST | `/api/organizations/:organizationId/overview/incidents` | Member | Paginated incidents across monitors and status pages: body `{search, fromDate, toDate, pagination}`; an incident matches when it overlaps the range (`started_at <= to` and unresolved or `resolved_at >= from`), search covers title, monitor, status page, and error message |
+| GET | `/api/organizations/:organizationId/overview/monitors` | Member | Every synthetic check in the org with 30-day aggregates; a project whose results fail to read sets `partial: true` like the servers endpoint |
+
+Instance identity is the `server_name` tag, which comes from the OTLP `service.name` resource attribute; grouping by Kubernetes cluster keys off the `k8s.cluster.name` tag and the group selector only offers it when at least one instance carries one. Clicking a row opens `/dashboards?projectId=&server=&preset=30m` (plus `dashboard=` when the project has the `traceway-otel-agent` template applied); `server` scopes every widget query via `scopeTagFilters` in `widget-grid`/`widget-renderer`. Cluster-wide instrumentation manifests live in `examples/kubernetes/`, documented at `docs/pages/learn/kubernetes.mdx`.
 
 **Invitations**
 | Method | Endpoint | Auth | Purpose |
@@ -619,6 +790,71 @@ backend/
 | GET | `/api/invitations/:token` | None | Get invitation info |
 | POST | `/api/invitations/:token/accept` | None | Accept (new user) |
 | POST | `/api/invitations/:token/accept-existing` | App | Accept (existing user) |
+
+**On-Call** (teams, schedules, escalation policies, pages)
+
+Org-scoped entities in the main DB. Teams (`teams`/`team_members`) own projects one-to-one (`project_teams`, unique on project_id). Schedules (`oncall_schedules`) store PagerDuty-style calendar layers as a JSON `definition` document (rotations daily/weekly/custom, handoff time/day, time-of-day and day-of-week restrictions); one-off overrides are normalized rows (`oncall_overrides`). The pure resolution engine lives in `backend/app/oncall/` (`ResolveRange`/`ResolveAt`, tz-aware calendar math, later layer wins, overrides trump all). Both apply the same stacking, so a schedule puts exactly one person on call at any instant: `ResolveAt` is `ResolveRange` over a single instant, and paging a whole schedule stack (waking the person an override was meant to relieve) is the bug it exists to prevent. Escalation policies (`escalation_policies`) hold JSON steps (`targets` schedule/user/team/channel + `delayMinutes`, `repeatCount`); rules page on-call via the `escalation` notification channel type (config `{"policyId"}`), special-cased in `notifications/dispatch.go` through `RegisterPageOpener` (wired in `cmd/run.go`). A fired rule opens a `pages` row (dedup key `ruleId|dedupToken` with a partial unique index while unresolved; rules without a dedup token dedup at rule level; refires bump `event_count` and never reset the escalation clock). The escalator worker (`oncall/escalator.go`, `ONCALL_POLL_SECONDS`) claims due pages in a transaction (pg advisory lock 824737002 for multi-instance), inserts `page_notifications` rows, resolves targets to users, delivers via each user's `user_contact_methods` (email/slack/pushover/telegram adapter configs; account-email fallback always), then escalates level by level until ack/resolve or exhaustion. `RequireOrganizationAccess` middleware (any org role) gates member-level reads; mutations are org-admin; page acknowledge deliberately requires no write access.
+
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| GET/POST | `/api/organizations/:organizationId/teams` | Member / Admin | List (with members+projects) / create |
+| PUT/DELETE | `/api/organizations/:organizationId/teams/:teamId` | Admin | Update / delete |
+| PUT | `.../teams/:teamId/members`, `.../teams/:teamId/projects` | Admin | Replace ordered members / owned projects |
+| GET/POST | `/api/organizations/:organizationId/schedules` | Member / Admin | List / create |
+| GET/PUT/DELETE | `.../schedules/:scheduleId` | Member / Admin / Admin | Detail+overrides / whole-document update / delete |
+| GET | `.../schedules/:scheduleId/timeline?from=&to=` | Member | Rendered per-layer + final shifts (max 62 days) |
+| POST/DELETE | `.../schedules/:scheduleId/overrides(/:overrideId)` | Member | Create (any member, max 30d) / delete (creator, covered user, or admin) |
+| GET | `/api/organizations/:organizationId/oncall/now` | Member | Overview: per team/schedule current + next on-call |
+| GET | `/api/oncall/current?projectId=` | App | Owning team + current on-call for a project (issue page) |
+| GET | `/api/escalation-policies` | App | Policies of the project's org (channel dialog picker) |
+| GET/POST | `/api/organizations/:organizationId/escalation-policies` | Member / Admin | List / create |
+| PUT/DELETE | `.../escalation-policies/:id` | Admin | Update / delete (422 while referenced by a channel) |
+| POST | `/api/pages` | App | List (POST-body: status open/acknowledged/resolved/active + pagination) |
+| GET | `/api/pages/:id` | App | Detail + delivery log |
+| POST | `/api/pages/:id/acknowledge` | App (no write gate) | open -> acknowledged, stops escalation; 409 if not open |
+| POST | `/api/pages/:id/resolve` | App | open/acknowledged -> resolved; 409 if already resolved |
+| GET | `/api/pages/open-count` | App | Sidebar badge count |
+| GET/POST | `/api/contact-methods` | App | Own contact methods (self-scoped). Types: email, slack, pushover, telegram, sms. SMS requires Twilio (`TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` + one of `TWILIO_FROM_NUMBER` / `TWILIO_MESSAGING_SERVICE_SID`); without them SMS is not offered at all — the list response carries `smsEnabled: false` so the type picker hides it; create, re-point, resend-code and test answer 422; the escalator drops existing sms methods before its "no methods left" check so those users fall back to the account email; and the adapter errors instead of reporting a delivery nobody received. Disabling and deleting a leftover sms method stay available. Creating/re-pointing an sms method starts code verification; unverified numbers are never paged |
+| PUT/DELETE | `/api/contact-methods/:id` | App | Update (incl. enabled toggle) / delete |
+| POST | `/api/contact-methods/:id/test` | App | Send a canned test through one method (422 for unverified sms) |
+| POST | `/api/contact-methods/:id/verify` | App (rate-limited) | Confirm the 6-digit SMS code (hashed at rest, 10-min expiry, 5-attempt cap). Deliberately **not** under `middleware.Transactional`: a wrong code answers 422, which would roll the consumed attempt back, so the handler manages its own transactions (nesting one under the middleware would also deadlock the single-connection SQLite main DB) |
+| POST | `/api/contact-methods/:id/resend-code` | App (rate-limited) | Re-issue the verification code |
+| GET/PUT | `/api/user-notification-rules` | App | Per-user notification-rule chains `{high: [{contactMethodId, delayMinutes}], low: [...]}` (PagerDuty-style: the page's urgency picks the chain; steps are enqueued at claim time as scheduled outbox deliveries and cancelled on ack; no chain = all enabled+verified methods immediately). Escalation policies carry `urgency: auto\|high\|low` in their definition (auto: critical -> high); pages store the resolved urgency |
+| GET/POST | `/api/ack/:token` | None (rate-limited) | Tokenized no-login acknowledge: per-delivery `twk_` tokens (SHA-256-hashed on page_notifications), GET = read-only summary (scanner-safe), POST = idempotent ack recorded as `acknowledged_via='link'` attributed to the delivery's recipient; 404 after resolve. Frontend page: `/ack/[token]` |
+
+**Monitors** (user-facing name for synthetic uptime checks; engine in `backend/app/synthetics`, frontend under `/monitors`, see the SYNTHETICS_* env block)
+
+Checks (`synthetic_checks`, main DB) are http/tcp/browser probes with per-check interval, timeout, and a consecutive-failure threshold (flap damping). Runs flow through the `check_runs` queue (outbox-style guarded claims, terminal rows deleted, expired queued runs recorded as `missed`); results are telemetry (`check_results`, all three backends, pruned by the SQLite retention worker / 90d CH TTL). State transitions open/resolve `check_incidents` and feed the event-driven notification rule type `check_down` (recovery auto-resolves the page a rule-scoped dedup key opened via `oncall.AutoResolveByDedupKey`; recovery never dispatches to escalation channels). The notify hook runs post-commit with no ambient tx (SQLite single-connection). Remember: `notification_rule.repository.go` (both copies) lists event rule types explicitly, and `check_down` is one of them.
+
+**Incidents, incident updates & post-mortems.** `check_incidents` covers both auto and manual incidents: auto rows carry `check_id`+`project_id` (nullable now), hand-recorded ones carry only `status_page_id` (org admins record them from a status page for outages monitors missed; they never affect uptime numbers). All incidents can be given a public `title` and statuspage.io-style timeline updates (`incident_updates`: status investigating/identified/monitoring/update/resolved + message; auto open/resolve seeds empty-message investigating/resolved updates in the same tx in `synthetics/result.go`, and the probe `error_message` stays internal, never in the public payload). A `resolved` update closes a manual incident; auto lifecycle stays owned by `ProcessOutcome` (manual resolve/time-edit/delete of auto incidents answer 422). The public `/api/status/:slug` payload gained `pastIncidents` (90d union of the page's checks' auto incidents + its manual ones, titles defaulting to "<check name> is down", nested updates, cap 30, no ids/error messages); incident mutations invalidate every status-page cache slug of the org. Post-mortems (`post_mortems`, **project-scoped**: `project_id` NOT-NULL-in-practice with ON DELETE CASCADE, backfilled by migration from the linked incident's project else the org's oldest project) are internal markdown documents, never public: optional 1:1 incident link (`incident_id` unique where set, `ON DELETE SET NULL` so documents survive monitor/incident deletion; linkable incidents are the project's own autos plus the org's manual status-page incidents — cross-project autos answer 422), JSON-array `tags` (models.StringSlice), LIKE search over title/content/tags, and an append-only edit log (`post_mortem_events`: action created/updated + JSON `changes` field list, recorded only when something actually changed; served as the Activity panel). Routes are project-scoped (`/api/post-mortems*`, standard RequireProjectAccess/RequireWriteAccess chains, org resolved from the project for incident validation); incident mutations are org-admin since they are public content. Frontend: Post-Mortems tab on `/monitors` (all members; creation is a title-only dialog that creates the document immediately and opens the editor page), full-page WYSIWYG editor at `/monitors/post-mortems/[id]` (`@milkdown/crepe`, dynamically imported, app font stack overrides the theme's serif), paginated incident management page at `/monitors/status-pages/[pageId]/incidents` (which owns the Record Incident dialog).
+
+| Method | Endpoint | Auth | Purpose |
+|--------|----------|------|---------|
+| GET/POST | `/api/synthetics/checks` | App / App+Write | List / create checks (422 validation incl. browser-mode + cloud gates) |
+| GET/PUT/DELETE | `/api/synthetics/checks/:id` | App / +Write / +Write | Detail+incidents / update (type immutable; pausing drops queued runs) / delete (auto-resolves the check's open pages) |
+| POST | `/api/synthetics/checks/:id/run` | App+Write | Run now (422 if a run is already queued; OnCommit wake) |
+| POST | `/api/synthetics/overview` | App | Checks + per-range aggregates (uptime, avg latency) |
+| POST | `/api/synthetics/checks/:id/results` | App | Paginated run history (telemetry read, no Transactional; optional `status` filter up/down/missed + fromDate/toDate) |
+| POST | `/api/synthetics/checks/:id/series` | App | Bucketed uptime/latency series (telemetry read) |
+| GET | `/api/synthetics/screenshot?key=` | App | Streams a failure screenshot; key prefix-checked against the project |
+| GET | `/api/synthetics/output?key=` | App | Streams a failed browser run's stored Playwright output (.log keys only, same prefix check); "logs" link in the run history UI |
+| GET | `/api/synthetics/open-count` | App | Down-check count for the sidebar badge |
+| POST | `/api/runners/poll` | Runner (shared secret) | Instance-wide long-poll claim of browser runs (25s hold on the wake channel, NO Transactional, excluded from tracewaygin self-monitoring); self-registers the runner's liveness row |
+| POST | `/api/runners/results/:runId` | Runner (shared secret) | Report an outcome (MaxBytesReader 6MB incl. screenshotBase64; idempotent: lost/missing claim = 200 no-op; claims keyed "runner:<name>") |
+| GET/POST/PUT/DELETE | `/api/organizations/:organizationId/status-pages(/:id)` | Member / Admin | Status page CRUD (slug `[a-z0-9-]{3,60}` unique, checkIds validated against the org; branding fields `description`, `customDomain` unique hostname) |
+| POST | `/api/organizations/:organizationId/status-pages/:id/logo` | Admin | Upload a PNG/JPEG logo (raw body, 1MB cap, sniffed content type; SVG rejected as scriptable) stored via storage.Store under `statuspages/<id>/logo` |
+| GET | `/api/status/:slug/logo` | None (rate-limited) | Streams a public page's logo |
+| GET | `/api/status-domains/resolve` | None (rate-limited) | Maps the request Host header to a public status page slug — backs CNAMEd vanity domains (TLS terminates at the operator's proxy); the SPA calls it for anonymous visits to `/` |
+| GET | `/api/status/:slug` | None (rate-limited) | Public status payload: per-check status + 90 daily uptime buckets + incidents + `pastIncidents` (date-grouped titles with timeline updates); cached ~30s per slug; private/unknown slugs are both 404; latency values and internal error messages stripped. Frontend page: `/status/[slug]` (in `isPublicPath`) |
+| GET | `/api/organizations/:organizationId/incidents` | Member | Org incidents (90d, joined check/status-page names, updatesCount, postMortemId) |
+| GET | `/api/organizations/:organizationId/incidents/:incidentId/updates` | Member | One incident + its timeline updates |
+| GET | `/api/organizations/:organizationId/status-pages/:id/incidents` | Member | Paginated incident history of one status page (auto incidents of its checks + its manual ones, no time window; standard pagination envelope + `statusPage` meta). Frontend page: `/monitors/status-pages/[pageId]/incidents` |
+| POST | `/api/organizations/:organizationId/status-pages/:id/incidents` | Admin | Record a manual incident on a status page (title required, optional first update message, backdatable, optional resolvedAt) |
+| PUT/DELETE | `/api/organizations/:organizationId/incidents/:incidentId` | Admin | Edit title (any incident) / times (manual only, empty resolvedAt reopens; 422 for auto) / delete (manual only, 422 for auto) |
+| POST/DELETE | `/api/organizations/:organizationId/incidents/:incidentId/updates(/:updateId)` | Admin | Post / delete a public timeline update (a `resolved` update also closes an unresolved manual incident) |
+| GET/POST | `/api/post-mortems` | App / App+Write | Paginated list for the project (query params search/page/pageSize + repeatable `tag` params ANDed together) / create in the project (422 on duplicate or cross-project incident link) |
+| GET/PUT/DELETE | `/api/post-mortems/:id` | App / +Write / +Write | Full document with author names (contentMd) / update (records a `post_mortem_events` diff row; no-op saves change nothing) / delete |
+| GET | `/api/post-mortems/:id/activity` | App | Edit log for the Activity panel (who created/edited what, joined user names) |
 
 **Logs**
 | Method | Endpoint | Auth | Purpose |
@@ -671,11 +907,23 @@ func (c *ReportController) Report(ctx *gin.Context) {
 | `organizations` | Multi-tenant organizations |
 | `organization_users` | Junction table linking users to organizations with roles |
 | `projects` | Project config + tokens, linked to organizations |
+| `project_user_roles` | Per-project role overrides (`user`/`readonly`) for org members |
 | `invitations` | Team invitations with token, role, expiry |
 | `source_maps` | Uploaded source map files (project, version, storage key) |
 | `metric_registry` | Custom metric definitions (type, unit, description) |
-| `widget_groups` | Dashboard widget groups (name, default flag) |
-| `widget_group_widgets` | Individual widgets within groups (type, config, position) |
+| `dashboards` | Org-owned dashboards (name, JSONB definition with widgets, template provenance) |
+| `project_dashboards` | Which projects show a dashboard, and tab order |
+| `dashboard_templates` | Marketplace templates (key, category, definition), seeded by migrations |
+| `starred_dashboard_widgets` | Homepage layout per project (dashboard id + widget id, position, col_span, size) |
+| `synthetic_checks` | Synthetic check config + current state (status, consecutive_failures, next_run_at) |
+| `check_runs` | Synthetic run queue (queued/claimed only; terminal rows deleted, telemetry is the record) |
+| `check_incidents` | Incident spans: auto (nullable check_id+project_id) and manual (nullable status_page_id), plus public title (feeds status pages) |
+| `incident_updates` | Public timeline updates on incidents (status + message, seeded on auto open/resolve) |
+| `post_mortems` | Internal markdown post-mortems (project-scoped via `project_id` ON DELETE CASCADE, tags JSON array, optional unique incident link with ON DELETE SET NULL) |
+| `post_mortem_events` | Append-only post-mortem edit log (action, JSON changes list, user, ON DELETE CASCADE) |
+| `synthetic_runners` | Liveness registry for self-registered runner fleet (unique name, version, first/last_seen_at; no credentials, no org scoping) |
+| `status_pages` | Public uptime pages (org-scoped slug + selected check ids + branding: description, logo_key, unique custom_domain) |
+| `widget_groups` / `widget_group_widgets` / `starred_widgets` | Legacy pre-dashboards tables, retained read-only for rollback until a follow-up drop |
 
 #### ClickHouse vs PostgreSQL Decision Guide
 - **PostgreSQL**: Relational/config data needing ACID, frequent updates, JOINs, low volume (users, organizations, projects, invitations, widgets, source maps, metric registry)
@@ -691,14 +939,17 @@ In SQLite mode (`DB_TYPE=sqlite`), the backend uses **two separate SQLite databa
 | **Main DB** | `db.DB` | `traceway.db` | PostgreSQL replacement — relational/config data | Yes (`middleware.Transactional`, `db.ExecuteTransaction`) |
 | **Telemetry DB** | `db.TelemetryDB` | `traceway_telemetry.db` | ClickHouse replacement — append-only telemetry | No — direct inserts without transactions |
 
+Both embedded builds (SQLite and DuckDB telemetry) are single-instance: the databases are local files, and the in-memory project cache only learns about another process's writes through the Postgres LISTEN/NOTIFY listener, which exists only under `transactional_pg`. Running more than one backend instance is supported only on the `transactional_pg telemetry_ch` build (docs: `/server/minimal#running-more-than-one-instance`).
+
 **Main DB tables** (`db.DB` — transactional, uses lit with `*sql.Tx`):
 - `users`, `organizations`, `organization_users`, `projects`, `invitations`
-- `source_maps`, `metric_registry`, `widget_groups`, `widget_group_widgets`
-- `notification_channels`, `notification_rules`, `notification_history`
+- `source_maps`, `metric_registry`, `dashboards`, `project_dashboards`, `dashboard_templates`, `starred_dashboard_widgets` (plus the legacy `widget_groups`/`widget_group_widgets`/`starred_widgets`)
+- `notification_channels`, `notification_rules`
+- `synthetic_checks`, `check_runs`, `check_incidents`, `incident_updates`, `post_mortems`, `post_mortem_events`, `synthetic_runners`, `status_pages`
 
 **Telemetry DB tables** (`db.TelemetryDB` — non-transactional, uses lit with `db.TelemetryDB` directly):
 - `endpoints`, `tasks`, `exception_stack_traces`, `spans`, `metric_points`
-- `session_recordings`, `archived_exceptions`, `slow_endpoints`, `fired_notifications`
+- `session_recordings`, `archived_exceptions`, `slow_endpoints`, `fired_notifications`, `check_results`
 
 **How to access each database in repository code:**
 
@@ -721,14 +972,29 @@ for _, item := range items {
 - `backend/app/migrations/sqlite/` — runs on `db.DB` (main)
 - `backend/app/migrations/sqlite_telemetry/` — runs on `db.TelemetryDB` (telemetry)
 
-**SQLite-specific type helpers** (`backend/app/repositories/sqlite_types.go`):
+**SQLite-specific type helpers** (`backend/app/repositories/telemetry/sqlitetypes/`):
 - `SQLiteTime` — implements `sql.Scanner`/`driver.Valuer` for `time.Time` ↔ SQLite TEXT
 - `SQLiteJSONMap` — implements `sql.Scanner`/`driver.Valuer` for `map[string]string` ↔ SQLite JSON TEXT
 - Row types (e.g., `endpointRow`, `taskRow`) wrap domain models with these types for lit compatibility
 
+#### DuckDB Telemetry Backend (self-hosted, opt-in)
+
+Built with `-tags telemetry_duckdb` (`CGO_ENABLED=1` required), this is an alternative telemetry store for the same `DB_TYPE=sqlite` deployment: the **main DB stays SQLite** (`db.DB`, relational/config), while the **telemetry DB becomes DuckDB** (`db.TelemetryDB`, columnar). It exists because DuckDB's columnar engine is dramatically faster on the analytics/aggregation reads the dashboard issues — at 10M rows it clears read-probe thresholds that SQLite times out on. Backends are selected on two build-tag axes: `telemetry_ch` / `telemetry_duckdb` / *(none = SQLite telemetry)* for the telemetry store and `transactional_pg` / *(none = SQLite main)* for the relational store. Only three combinations are supported — *(no tags)* dual SQLite, `telemetry_duckdb`, and `transactional_pg telemetry_ch` — enforced by compile-time guard files in `backend/app/db/` (stale `pgch`/`duckdb`/`oltp_*` tags also fail with a rename message). Repositories are organized on the same two axes: telemetry repositories live in per-backend packages `backend/app/repositories/telemetry/{clickhouse,sqlite,duckdb}/` and transactional (relational) repositories in `backend/app/repositories/transactional/{pg,sqlite}/`, each re-exported as singletons through tag-guarded facade files at the axis package root (`telemetry/telemetry_ch.go` etc., `transactional/transactional_pg.go` etc.). Consumers import the facade packages — `telemetry.SpanRepository`, `transactional.UserRepository` — never a backend package directly. Helpers shared by all telemetry backends are in `telemetry/shared/`, the SQLite scan/value types shared by the sqlite+duckdb backends are in `telemetry/sqlitetypes/`, and helpers/types shared by the transactional backends (auth-token hashing/time formats, facade-crossing structs) are in `transactional/shared/`. The `transactional/pg` and `transactional/sqlite` implementations are intentionally kept dialect-neutral (lit `:name` queries rendered per `db.Driver`), enforced byte-for-byte by `transactional/parity_test.go`. Running Postgres requires the `transactional_pg` build: the default build's migration runner applies SQLite-dialect migrations unconditionally, so `DB_TYPE=postgres` without the tag is not a supported combination.
+
+- **Driver:** `github.com/duckdb/duckdb-go/v2` (the official driver; marcboeker/go-duckdb is deprecated). Bundles prebuilt static libs for glibc only — **not musl/Alpine**, so the image uses Debian (`Dockerfile.duckdb`).
+- **Opened in** `backend/app/db/db_telemetry_duckdb.go`: telemetry path is the SQLite path with `.db` swapped for `_telemetry.duckdb`. By default DuckDB auto-tunes to the host; `DUCKDB_MEMORY_LIMIT`/`DUCKDB_THREADS`/`DUCKDB_CHECKPOINT_THRESHOLD` (passed through as DSN config options) let operators cap memory/threads so a memory-capped container doesn't read the host's RAM and OOM-kill the backend, and raise the WAL checkpoint threshold (default 16MB) so sustained Appender ingest isn't stalled by frequent checkpoints. `preserve_insertion_order=false` is always set — telemetry reads all have explicit ORDER BY, and dropping the guarantee lets DuckDB parallelize bulk loads and large scans with less memory. The read pool is bounded (`SetMaxOpenConns(duckDBMaxReadConns)`) since each DuckDB connection can use all threads + its own query memory; Appender writes use their own `DuckDBConnector.Connect()` connections and bypass that cap. Exposes `db.DuckDBConnector` (needed for the Appender).
+- **Writes use the Appender API**, not `INSERT` (`duckdb.NewAppenderFromConn(conn, "", table)` → `AppendRow(...)` → `Close()` flushes). Upserts still go through `ExecContext` with `ON CONFLICT`. The Appender rejects typed `*string` for nullable VARCHAR — use `nullableString()` in `backend/app/repositories/telemetry/duckdb/helpers.go` (returns untyped `nil` or the dereferenced value).
+- **Write-path observability:** a row the Appender rejects is dropped rather than failing the whole frame (the SQLite backend 500s instead), so a poison row cannot wedge the SDK's retry loop. Every drop increments a per-table counter (`db.RecordTelemetryRowDropped`) and fires a rate-limited (1/min per table) `traceway.CaptureException`; Appender flush/connect failures still propagate to the request (500, SDK retries) and increment an insert-failure counter. `GET /api/health/deep` (operator endpoint: requires the HEALTH_DEEP_TOKEN bearer secret, unset disables it; all telemetry backends) exposes `telemetryBackend`, `droppedRows` per table, `droppedRowsTotal`, `insertFailures`, `ingestRejected` (requests turned away by the ingest admission gate), and on DuckDB an `engine` object (db/WAL file bytes, `duckdb_memory()` usage, read-pool in-use/wait stats) alongside its existing ClickHouse fields; it 503s only when the configured telemetry backend is ClickHouse and CH is unreachable (the embedded backends answer 200 with `chReachable:false`). The benchmark loadgen polls it before/after every ramp step and fails any step whose drop delta is nonzero; read-probe fills record cumulative `droppedRows` per fill level. When `MONITORING_TRACEWAY_URL` is set, `monitoring.StartTelemetryDBReporter` also emits `traceway.duckdb.*` metrics every 10s: `rows_dropped.delta`, `insert_failures.delta`, `db_size_mb`, `wal_size_mb`, `memory_used_mb`, `read_pool.in_use`, `read_pool.wait_count.delta`, `read_pool.wait_ms.delta`. The hourly retention worker issues a `CHECKPOINT` after its deletes so retention actually reclaims disk (DuckDB otherwise defers reclamation to the WAL checkpoint threshold).
+- **`lit` placeholders:** `db.Driver` stays `lit.SQLite`, which emits `?` — DuckDB accepts these, so no separate driver was needed for reads.
+- **Migrations:** `backend/app/migrations/duckdb_telemetry/` (mirrors `sqlite_telemetry/` table-for-table; integer columns are `BIGINT`, JSON is `VARCHAR`, no secondary indexes since it's columnar).
+- **Dialect gotchas vs SQLite** (the read queries differ): native `quantile_cont(col, p)` for P50/P95/P99 instead of fetch-and-sort; `strftime('%s',col)`→`epoch(col)`; time bucketing via `time_bucket(to_seconds(N), col, TIMESTAMP '1970-01-01')` — the explicit epoch origin is required because DuckDB anchors sub-day buckets at 2000-01-03 by default, which would misalign chart buckets against the SQLite backend's epoch-floored buckets for any interval that doesn't evenly divide a day; `json_extract`→`json_extract_string`; `json_each`→`LATERAL unnest(json_keys(x))`; strict GROUP BY needs `ANY_VALUE`/`arg_max`; `SUM` returns HUGEINT (CAST to BIGINT); `CAST(.. AS REAL)`→`CAST(.. AS DOUBLE)`.
+- **Tests:** `backend/app/repositories/telemetry/testhelper_duckdb_test.go` (tagged `telemetry_duckdb`) provides `setupTestDB` so the entire existing telemetry test suite runs against an in-memory DuckDB.
+
 #### Data Retention
 
-Retention is handled in three different ways depending on the deployment.
+Retention is handled in several different ways depending on the deployment.
+
+**0. Main-DB auth prune — `retention.Start` worker** (`backend/app/retention/auth_tokens.go` + `oauth_sessions.go`, sharing `startDBPruneWorker` in `prune_worker.go`). Runs in **all modes** (Postgres and SQLite) against `db.DB`: once at startup, then every 24h, deleting expired/consumed auth rows. `auth_tokens` prunes expired `device_authorizations` (also pruned opportunistically on every `/api/auth/device/authorize` call, so the daily worker is a backstop there), `refresh_tokens` that are expired, revoked, or used more than 30 days ago (used rows are kept a month for replay detection, then dropped to bound per-user growth), plus revoked-or-expired `personal_access_tokens` (PAT expiry was otherwise only enforced lazily at read time). `oauth_sessions` prunes expired SSO login sessions. No env var — always on. (Refresh-token families and PATs also have explicit revoke paths: `POST /api/auth/logout` and the account PAT UI.)
 
 **1. ClickHouse — `TTL` clauses on the table itself.** Only a few tables have a TTL; everything else is kept indefinitely (operators can drop monthly partitions manually if needed).
 
@@ -737,14 +1003,21 @@ Retention is handled in three different ways depending on the deployment.
 | `metric_points` (raw) | **7 days** | `0034_add_ttl_metric_points.up.sql` |
 | `metric_points_1m` (1-min rollup) | **30 days** | `0035_add_ttl_metric_points_1m.up.sql` |
 | `metric_points_1h` (1-hour rollup) | **1 year** | `0036_add_ttl_metric_points_1h.up.sql` |
-| `log_records` | **30 days** | `0045_create_log_records.up.sql` |
+| `log_records` | **90 days** | `0075_increase_ttl_log_records.up.sql` (raised from 30d set in `0045_create_log_records.up.sql`) |
+| `profiling_samples` (the bulk) | **30 days** | `0068_add_ttl_profiling_samples.up.sql` |
+| `profiles` (slim metadata) | **30 days** | `0069_add_ttl_profiles.up.sql` |
+| `profiling_stacks` (dedup table) | **30 days** | `0070_add_ttl_profiling_stacks.up.sql` |
+| `check_results` (synthetic check probes) | **90 days** | `0083_add_ttl_check_results.up.sql` |
 | All other CH tables (`transactions`, `exception_stack_traces`, `tasks`, `spans`, `sessions`, `ai_traces`, `session_recordings`, `fired_notifications`, `archived_exceptions`, `slow_endpoints`, `endpoints`, etc.) | **No TTL — retained indefinitely** | — |
 
-**2. SQLite — `retention.Start` worker** (`backend/app/retention/sqlite.go`). In SQLite mode, neither `db.DB` nor `db.TelemetryDB` has any built-in expiry, so a background worker fires once at startup and then every hour and runs a `DELETE FROM <table> WHERE <time_column> < cutoff` against each telemetry table plus `notification_history`.
+The three profiling tables share a 30-day TTL keyed on each table's time column (`start_time` / `recorded_at` / `last_seen`). `profiling_stacks` is a `ReplacingMergeTree(last_seen)` dedup table, so `last_seen` is bumped on every re-ingest that references a stack — a stack only ages out once it has gone unreferenced for the full window, which is exactly when its samples have also expired, so no sample is ever left pointing at a dropped stack.
+
+**2. SQLite — `retention.Start` worker** (`backend/app/retention/sqlite.go`). In SQLite mode, neither `db.DB` nor `db.TelemetryDB` has any built-in expiry, so a background worker fires once at startup and then every hour and runs a `DELETE FROM <table> WHERE <time_column> < cutoff` against each telemetry table.
 
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `SQLITE_RETENTION_DAYS` | `30` | TTL in days. Set to `0` to disable the worker entirely. Has no effect outside SQLite mode. |
+| `DUCKDB_RETENTION_DAYS` | `30` | Same worker on the DuckDB telemetry backend. When set it takes precedence there; when unset the worker falls back to `SQLITE_RETENTION_DAYS` (selection in `retention.telemetryRetentionConfig`). |
 
 Tables it prunes (and the column used):
 
@@ -754,9 +1027,16 @@ Tables it prunes (and the column used):
 | Telemetry | `log_records` | `timestamp` |
 | Telemetry | `sessions` | `started_at` |
 | Telemetry | `fired_notifications` | `fired_at` |
-| Main (`db.DB`) | `notification_history` | `created_at` |
+| Telemetry | `profiling_samples` | `start_time` |
+| Telemetry | `profiles` | `recorded_at` |
+| Telemetry | `profiling_stacks` | `last_seen` |
+| Telemetry | `check_results` | `recorded_at` |
 
-`archived_exceptions` (per-hash flags) and `slow_endpoints` (per-endpoint config) are intentionally skipped — they are not time-series data.
+`archived_exceptions` (per-hash flags) and `slow_endpoints` (per-endpoint config) are intentionally skipped — they are not time-series data. `profiling_stacks` *is* pruned (unlike those two) because it holds no user intent — it is a regenerable dedup table whose `last_seen` tracks the most recent referencing sample, so deleting expired stacks is safe.
+
+**2c. Synthetics failure screenshots — `retention.Start` worker** (`backend/app/retention/synthetics.go`). Browser-check failure screenshots written to local disk under `<STORAGE_PATH>/synthetics/` are aged out hourly by mtime, mirroring the session-recording split: the `check_results` rows referencing them are pruned separately (item 2 / CH TTL) and deliberately not coupled. `SYNTHETICS_SCREENSHOT_RETENTION_DAYS` (default 30, `0` disables); no-op unless `STORAGE_TYPE=local`.
+
+**2b. Log row cap — `retention.Start` worker** (`backend/app/retention/log_cap.go`). SQLite mode only (SQLite or DuckDB telemetry), off by default. When `LOG_RECORDS_MAX_ROWS` is set to a positive N, a worker runs once at startup and then every minute and deletes `log_records` rows strictly older than the Nth-newest row's `timestamp` (single portable DELETE with an `ORDER BY timestamp DESC LIMIT 1 OFFSET N-1` subquery; NULL boundary = no-op under the cap, boundary ties are kept). **The cap is best-effort, not a hard limit**: nothing throttles ingest, so between passes the table can exceed N, and sustained ingest above N rows/minute keeps it above the cap permanently — document it to users as a cleanup task with a 1-minute window, sized with headroom for peak log volume. Bounds log disk usage independently of `SQLITE_RETENTION_DAYS`; disk reclamation still happens via the hourly retention pass / DuckDB WAL checkpointing.
 
 **3. On-disk session recordings — `retention.Start` worker** (`backend/app/retention/recordings.go`). Session recordings written to local disk (`STORAGE_TYPE=local`) accumulate under `<STORAGE_PATH>/recordings/`. A second worker walks that directory once at startup and then every hour and removes files whose `mtime` is older than the TTL, then prunes any directories left empty. The worker is a no-op when `STORAGE_TYPE=s3`.
 
@@ -765,6 +1045,17 @@ Tables it prunes (and the column used):
 | `SESSION_RECORDING_RETENTION_DAYS` | `30` | TTL in days. Set to `0` to disable the worker. Only runs when `STORAGE_TYPE=local` (default). |
 
 The DB rows in `session_recordings` are pruned by the SQLite retention worker (above) or by ClickHouse TTL — they are intentionally not coupled to the disk cleanup. Controllers that read recordings already log a non-fatal `traceway.CaptureException` when a referenced file is missing.
+
+**4. On-disk raw profile archives — `retention.Start` worker** (`backend/app/retention/profiles.go`). When `PROFILE_ARCHIVE_RAW` is enabled, the **native pprof ingest path** (`/profiles/ingest`) writes each upload's original pprof bytes to `<STORAGE_PATH>/profiles/<projectId>/<yyyymmdd>/<id>.pprof` (recorded on `Profile.StorageKey`) as a lossless archive for download / re-ingest / PGO — off the read path. The OTLP endpoint does not archive (its rows carry an empty `StorageKey`). A worker walks that directory once at startup and then every hour and removes files whose `mtime` is older than the TTL, then prunes empty directories. It reuses the same generic age-based cleanup as the recordings worker (`runDirAgeCleanup` / `isSafeStorageSubdir`) and is a no-op unless `PROFILE_ARCHIVE_RAW` is on **and** `STORAGE_TYPE=local`.
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `PROFILE_ARCHIVE_RAW` | `false` | Master switch for the raw archive. When off, no blob is written and the disk worker does nothing. |
+| `PROFILE_RETENTION_DAYS` | `30` | TTL in days for the on-disk archive. Set to `0` to disable the disk worker. Only runs when `PROFILE_ARCHIVE_RAW` is on and `STORAGE_TYPE=local`. |
+
+The `profiles` DB rows (and their `storage_key`) are pruned by the SQLite retention worker / ClickHouse TTL above — not coupled to this disk cleanup, mirroring the session-recording split.
+
+**5. Main-DB outbox prune — `retention.Start` worker** (`backend/app/retention/outbox.go`, same `startDBPruneWorker` scaffolding as item 0). Runs in **all modes** against `db.DB`: once at startup, then every 24h, deleting terminal `notification_outbox` rows — `sent`/`cancelled` older than 7 days, `failed` older than 30 days. `pending` and `sending` rows are never pruned, so nothing undelivered is dropped. No env var — always on. The durable record of what was notified lives in `fired_notifications` and `page_notifications`, which this does not touch. Note that `pages` and `page_notifications` themselves are currently retained indefinitely.
 
 #### Session Recording Uploader
 
@@ -787,15 +1078,22 @@ Observability (emitted every 10s via `traceway.CaptureMetric`):
 
 Sustained drops also fire a rate-limited (1/min) `traceway.CaptureException` so overload is visible in the issues feed without flooding it.
 
+#### Users, Organizations & Projects
+
+- **Users to organizations is many-to-many** via `organization_users`, one role per membership. A user joins additional organizations through invitations (`POST /api/invitations/:token/accept-existing` for existing accounts) and, in cloud mode, registration. Login/register/`LoginBundle` return every membership as `Organizations[]` with roles; the frontend keeps them in `authState.organizations` and groups the navbar project selector by organization when there is more than one.
+- **Projects belong to exactly one organization** (`projects.organization_id`). Org membership grants read access to all of the org's projects.
+- **Per-project role overrides** live in `project_user_roles(project_id, user_id, role)` with role `user` or `readonly`. Overrides only apply to members whose org role is `user` or `readonly`; owners and admins always have full access to every org project. Override rows are kept when a member's org role changes (they are inert for owner/admin), and are deleted when the member is removed from the org or the project is deleted. Managed from Settings > Team Members (expand a member row) via `GET/PUT /api/organizations/:orgId/members/:userId/project-roles(/:projectId)`; `PUT` with `role: "default"` clears the override and is accepted for any member regardless of org role (so stale rows on members promoted to admin can still be cleaned up); setting `user`/`readonly` is rejected with 422 for owners and admins.
+- **Effective project role** (`ProjectRepository.GetEffectiveRole`): the org role if `owner`/`admin`, otherwise the override if present, otherwise the org role. `/api/projects` returns it as `role` on each project and masks `token`/`sourceMapToken` when it resolves to `readonly`; the frontend derives write gating from it (`isProjectReadonly` in `projects.svelte.ts`).
+
 #### Organization Roles
 | Role | Description |
 |------|-------------|
 | `owner` | Full access, can manage organization |
 | `admin` | Full access to projects |
-| `user` | Standard access to projects |
-| `readonly` | Read-only access, cannot create projects or archive exceptions |
+| `user` | Standard access to projects (can be overridden per project to `readonly`) |
+| `readonly` | Read-only access, cannot create projects or archive exceptions (can be overridden per project to `user`) |
 
-The `RequireWriteAccess` middleware blocks write operations for users with `readonly` role.
+Middleware enforcement: `RequireProjectAccess` checks org membership (read access, unaffected by overrides); `RequireWriteAccess` blocks writes when the **effective project role** is `readonly`; `RequireAdminAccess` requires org role `owner`/`admin` for the `:organizationId` route param.
 
 #### Key Columns - transactions
 ```sql
@@ -824,11 +1122,10 @@ tags Map(String, String),  -- contextual tags from scope
 ### Database Migrations
 
 **CRITICAL RULES:**
-1. Each migration file must contain **exactly ONE SQL statement**
-2. Only create `.up.sql` files (no down migrations)
-3. Use sequential numbering: `NNNN_description.up.sql`
-
-**Why one statement per file?** ClickHouse migration runner executes each file as a single statement. Multiple statements will fail.
+1. `migrations/ch/` and `migrations/pg/` files must contain **exactly ONE SQL statement**. Both run through `golang-migrate`, and the ClickHouse driver is constructed with `MultiStatementEnabled: false` (`migrations_telemetry_ch.go`), so a second statement fails. `pg/` follows the same rule for symmetry.
+2. `migrations/sqlite/`, `migrations/sqlite_telemetry/` and `migrations/duckdb_telemetry/` run through `runMigrationsOn` in `migrations.go`, which splits on semicolons outside string literals (`splitStatements`, covered by `split_test.go`). A file there may hold a `CREATE TABLE` plus its indexes — that is the existing convention, e.g. `sqlite/0043_create_pages.up.sql`.
+3. Only create `.up.sql` files (no down migrations)
+4. Use sequential numbering: `NNNN_description.up.sql`
 
 **Example - Adding two columns requires TWO files:**
 ```
@@ -841,19 +1138,30 @@ backend/app/migrations/ch/
 
 ### Exception Hash Normalization
 
-The backend normalizes stack traces before hashing to group identical errors despite different runtime values. This happens in `backend/app/repositories/exceptions.go`.
+The backend normalizes stack traces before hashing to group identical errors despite different runtime values. This happens in `backend/app/controllers/clientcontrollers/client.controller.go`.
 
-**Normalization Steps:**
-1. Extract error type only (remove error message content)
-2. Remove absolute file paths (keep `filename:line` only)
-3. Replace hexadecimal addresses with `<hex>`
-4. Replace UUIDs with `<uuid>`
-5. Replace IP addresses with `<ip>`
-6. Replace timestamps with `<timestamp>`
-7. Replace numeric IDs in paths with `<id>`
-8. Normalize whitespace
-9. Remove ANSI color codes
-10. Hash the normalized string with SHA-256, truncate to 16 chars
+**Normalization Steps** (`ComputeExceptionHash`, applied in this order, and skipped entirely when `isMessage` is true):
+1. Strip the message from `Caused by:` lines, keeping the class name (`causedByRe`)
+2. Strip the message from the error line, keeping the error type (`errorMessageRe`)
+3. Collapse JS SDK function-name lines (ending in `()`, directly above a 4-space-indented `file:line:col` location line) to `<fn>` so resolved function names never affect grouping; anchoring on the location line keeps Go traces (tab-indented file lines) untouched (`jsFuncLineRe`)
+4. Remove URL origins such as `https://cdn.example.com` (`urlOriginRe`)
+5. Remove absolute file paths, keeping `filename:line` (`absolutePathRe`)
+6. Drop the column from any frame whose line number is 2 or higher (`laterLineColRe`)
+7. Remove `@v1.2.3` module version suffixes (`versionRe`)
+8. Replace hexadecimal addresses with `<hex>` (`hexRe`)
+9. Replace UUIDs with `<uuid>` (`uuidRe`)
+10. Replace runs of 5 or more digits with `<id>`, unless preceded by a colon or another digit (`largeNumberRe`)
+11. Replace email addresses with `<email>` (`emailRe`)
+12. Replace IP addresses, with an optional port, with `<ip>` (`ipRe`)
+13. Replace Go goroutine ids with `goroutine <n>` (`goroutineRe`)
+14. Drop line numbers from Java, Kotlin and Scala frames (`javaLineNumRe`)
+15. Collapse `... 12 more` to `... more` (`javaEllipsisRe`)
+16. Collapse runs of spaces and tabs, then runs of newlines (`spacesRe`, `newlinesRe`)
+17. Trim, hash with SHA-256, truncate to 16 hex chars
+
+**Not normalized:** timestamps and ANSI color codes. Two otherwise identical traces that differ only in an embedded timestamp, or only in `\x1b[31m` escapes, produce two separate Issues. Add a regex to the block in `client.controller.go` if that ever matters.
+
+**Note:** the column is kept only on line 1 (step 6). Minified bundles put everything on line 1, so there the column is the only frame disambiguator when no source map matched, while on real source lines the column is noise. Function names are excluded (step 3) because they are derived from the location and change as symbolication improves.
 
 **Result:** Same logical error gets same hash, even if:
 - Error message contains different user IDs
@@ -863,17 +1171,17 @@ The backend normalizes stack traces before hashing to group identical errors des
 ### Repository Patterns
 
 #### Singleton Pattern
-Repositories are exported as package-level singletons for simple access:
+Repositories are exported as package-level singletons, re-exported per storage axis through the facade packages `app/repositories/transactional` and `app/repositories/telemetry`:
 ```go
-// backend/app/repositories/users.go
+// backend/app/repositories/transactional/sqlite/user.repository.go (and the pg/ twin)
 var UserRepository = userRepository{}
 
-// backend/app/repositories/projects.go
-var ProjectRepository = projectRepository{}
+// backend/app/repositories/transactional/transactional_sqlite.go (tag-guarded facade)
+var UserRepository = sqliterepo.UserRepository
 
 // Usage in controllers
-user, err := repositories.UserRepository.FindByEmail(tx, email)
-project, err := repositories.ProjectRepository.FindById(tx, id)
+user, err := transactional.UserRepository.FindByEmail(tx, email)
+spans, err := telemetry.SpanRepository.FindByTraceId(projectId, traceId)
 ```
 
 #### Batch Insert (ClickHouse)
@@ -953,241 +1261,78 @@ if err != nil {
 - **Validation errors** (user-facing): `c.JSON(422, gin.H{"error": "message"})` for form validation
 - **Always** wrap errors with `traceway.NewStackTraceErrorf` or `fmt.Errorf` using `%w` — never discard the original error
 
+### Emails
+
+Every email Traceway sends is a hardcoded template in `backend/app/services/emailtemplates/` (embedded with `go:embed`, parsed once at init). The copy of an email lives in its own `.gohtml` file; the payload is the only thing it interpolates. There is no shared layout document, so changing one email cannot reshape the others, and every file is a complete HTML document styled like the rest.
+
+Templates: `new_error`, `error_regression`, `check_down`, `check_recovered`, `alert` (the threshold email every rate/latency/apdex/throughput/task/impact/cost rule sends), `ai_flagged`, `page` (on-call escalation), `test` (both test buttons), `invitation`, `password_reset`.
+
+- **One send path** — `services.SendEmail(ctx, services.Email{...})` in `backend/app/services/email.service.go` is the only way mail leaves the process: it renders the template, wraps it as `multipart/alternative` (plaintext part first, quoted-printable), and talks SMTP. With `SMTP_ENABLED` off it logs the plaintext instead. `services.RenderEmail` is the render-only half, used by the preview endpoint.
+- **`services.Email`** carries the chrome every template shares (`Title`, `Badge`/`BadgeColor` via `EmailColor*`, `URL`, `Footer`, `LogoURL` defaulting to `{APP_BASE_URL}/traceway-mark.png`) plus `Template` and `Data`, the typed payload reached as `{{.Data.X}}`. `Text` is the plaintext alternative and must stand on its own.
+- **Notification payloads** live on `models.NotificationMessage.Email` (`models.NotificationEmail`: a template name plus one typed struct — `EmailException`, `EmailCheck`, `EmailAlert`, `EmailFlagged`, `EmailPage`, `EmailTest`). The builders in `notifications/messages.go` attach it; `services.NotificationEmail` turns a message into the `Email` at send time (severity chip, absolute link, "why you got this" footer). It rides through the notification outbox as JSON, so the shape is a wire format: add fields, never repurpose them. Only the email adapter reads it — Slack/Telegram/SMS/webhook and `fired_notifications` still see `Body` alone, so `Body` must always stay complete.
+- **Adding an email**: add `emailtemplates/<name>.gohtml`, add its payload struct, and call `SendEmail` with `Template: "<name>"`. For a new rule type that only needs a sentence and a link, reuse `alert` by filling `models.EmailAlert`.
+- **Preview**: `EMAIL_PREVIEW_ENABLED=true` registers `GET /api/email-preview` (index) and `GET /api/email-preview/:template`, which renders any template with sample data (`?format=text` shows the plaintext alternative). Off by default, so it is never a route in production. Sample data lives in `controllers/email_preview.controller.go`.
+
 ---
 
-## Go Client SDK
+## Native `/api/report` Protocol
 
-**Location:** External repository at `/Users/dusanstanojevic/Documents/workspace/go-client`
+There is **no Traceway Go SDK**. It was retired, and every backend, Go included, instruments with
+OpenTelemetry and exports over OTLP/HTTP. The docs carry no Go SDK pages, and `docs/public/_redirects`
+301s the old `/client/sdk` and `/client/*-middleware` URLs to `/client/otel`. Do not reintroduce them.
 
-The SDK is a separate Go module that applications import to send telemetry to Traceway.
-
-### Installation
-```go
-import (
-    "github.com/user/traceway"           // Core SDK
-    "github.com/user/traceway/traceway_gin"  // Gin middleware
-)
-```
-
-### Connection String Format
-```
-<project_token>@<server_url>
-
-Examples:
-abc123@http://localhost:8082/api/report
-abc123@https://traceway.example.com/api/report
-```
-
-### Architecture
-
-#### Ring Buffer Batching
-The SDK uses a ring buffer to batch telemetry data:
-1. Data collected into current "frame" (transactions, exceptions, metrics)
-2. Frame rotates every 5 seconds (configurable via `WithCollectionInterval`)
-3. Completed frames uploaded async via HTTP POST
-4. Failed uploads retry with exponential backoff
-
-#### Data Types Collected
-- **Transactions**: HTTP requests (endpoint, duration, status code)
-- **Exceptions**: Errors/panics with full stack traces
-- **Metrics**: System metrics (CPU, memory, Go runtime)
-
-### Gin Middleware Integration
-
-```go
-package main
-
-import (
-    "github.com/gin-gonic/gin"
-    "traceway"
-    "traceway/traceway_gin"
-)
-
-func main() {
-    router := gin.Default()
-
-    // Initialize with app name and connection string
-    traceway_gin.Use(router, "myapp", "token@http://localhost:8082/api/report")
-
-    // Or with options
-    traceway_gin.Use(router, "myapp", "token@http://localhost:8082/api/report",
-        traceway.WithDebug(true),
-        traceway.WithCollectionInterval(10 * time.Second),
-    )
-
-    router.GET("/api/users", getUsers)
-    router.Run(":8080")
-}
-```
-
-The middleware automatically:
-- Tracks request duration and status code
-- Captures endpoint as `"METHOD /path"` (e.g., `"GET /api/users"`)
-- Recovers from panics and reports them as exceptions
-- Attaches request scope for contextual tags
-
-### Capture Methods
-
-#### Exceptions
-```go
-// Basic capture
-traceway.CaptureException(err)
-
-// With additional scope
-traceway.CaptureExceptionWithScope(err, scope)
-
-// Panic recovery (use in defer)
-defer traceway.Recover()
-
-// Recover with custom scope
-defer traceway.RecoverWithScope(scope)
-```
-
-#### Metrics
-```go
-// Capture custom metric
-traceway.CaptureMetric("custom.metric.name", 42.0)
-
-// Metrics are batched and sent with the next frame
-```
-
-#### Transactions (Manual)
-```go
-// For non-HTTP transactions or custom tracking
-txn := traceway.StartTransaction("operation_name")
-defer txn.End()
-
-// Add segments for sub-operations
-seg := txn.StartSegment("database_query")
-// ... do work ...
-seg.End()
-```
-
-#### Tasks and Segments
-```go
-// Capture a task with duration
-traceway.CaptureTask("background_job", startTime, endTime, nil)
-
-// Measure a function
-result := traceway.MeasureTask("compute", func() interface{} {
-    return heavyComputation()
-})
-
-// Segments within tasks
-traceway.CaptureSegment(taskID, "subtask", startTime, endTime)
-```
-
-### Scope System
-
-Scopes attach contextual tags to exceptions and transactions.
-
-#### Global Scope
-```go
-// Configure tags that apply to all telemetry
-traceway.ConfigureScope(func(s *traceway.Scope) {
-    s.SetTag("environment", "production")
-    s.SetTag("version", "1.2.3")
-    s.SetTag("region", "us-east-1")
-})
-```
-
-#### Request Scope (Gin)
-```go
-func handler(c *gin.Context) {
-    // Get request-scoped scope from Gin context
-    scope := traceway_gin.GetScopeFromGin(c)
-
-    // Tags only apply to this request
-    scope.SetTag("user_id", userID)
-    scope.SetTag("tenant", tenantID)
-
-    // Any exceptions captured in this request will include these tags
-}
-```
-
-#### Scope Methods
-```go
-scope.SetTag("key", "value")      // Set a single tag
-scope.SetTags(map[string]string{  // Set multiple tags
-    "key1": "value1",
-    "key2": "value2",
-})
-scope.SetUser(userID)             // Shorthand for user_id tag
-scope.SetExtra("key", anyValue)   // Set extra data (serialized to JSON)
-```
-
-### Configuration Options
-
-```go
-traceway.Init(appName, connectionString,
-    // Debug mode - logs all telemetry to stdout
-    traceway.WithDebug(true),
-
-    // Max frames to keep in ring buffer (default: 20)
-    traceway.WithMaxCollectionFrames(20),
-
-    // How often to rotate frames (default: 5s)
-    traceway.WithCollectionInterval(5 * time.Second),
-
-    // HTTP upload timeout (default: 3s)
-    traceway.WithUploadTimeout(3 * time.Second),
-
-    // Metric collection interval (default: 30s)
-    traceway.WithMetricInterval(30 * time.Second),
-
-    // Disable automatic metric collection
-    traceway.WithMetricsDisabled(),
-
-    // Custom HTTP transport
-    traceway.WithTransport(customTransport),
-)
-```
-
-### Default Collected Metrics
-
-| Metric | Description | Unit |
-|--------|-------------|------|
-| `cpu.used_pcnt` | CPU usage percentage | % |
-| `mem.used` | Memory usage | MB |
-| `mem.used_pcnt` | Memory usage percentage | % |
-| `go.go_routines` | Active goroutine count | count |
-| `go.heap_objects` | Heap object count | count |
-| `go.num_gc` | Total GC cycles | count |
-| `go.gc_pause` | Last GC pause time | nanoseconds |
+The `/api/report` endpoint below still exists and is still served. The browser and mobile SDKs
+(`@tracewayapp/*`, the iOS and Android libraries, Flutter) speak it, and the backend uses it to report
+its own telemetry. Keep this section accurate for those clients.
 
 ### Data Format (Frame)
 
-The SDK sends data as gzipped JSON:
+Clients send data as gzipped JSON. The wire shape is `ReportRequest` in `backend/app/controllers/clientcontrollers/client.controller.go` wrapping `CollectionFrame` from `backend/app/models/clientmodels/`:
+
 ```json
 {
-  "app": "myapp",
-  "transactions": [
+  "appVersion": "1.2.3",
+  "serverName": "myapp-host-1",
+  "collectionFrames": [
     {
-      "trace_id": "abc123",
-      "endpoint": "GET /api/users",
-      "duration_ms": 45.2,
-      "status_code": 200,
-      "timestamp": "2024-01-15T10:30:00Z"
-    }
-  ],
-  "exceptions": [
-    {
-      "type": "RuntimeError",
-      "value": "connection refused",
-      "stacktrace": "...",
-      "tags": {"user_id": "123"},
-      "timestamp": "2024-01-15T10:30:00Z"
-    }
-  ],
-  "metrics": [
-    {
-      "name": "cpu.used_pcnt",
-      "value": 45.2,
-      "timestamp": "2024-01-15T10:30:00Z"
+      "traces": [
+        {
+          "id": "5b8e1a2f-3c4d-4e5f-8a9b-0c1d2e3f4a5b",
+          "endpoint": "GET /api/users",
+          "duration": 45200000,
+          "statusCode": 200,
+          "recordedAt": "2024-01-15T10:30:00Z",
+          "isTask": false,
+          "attributes": {},
+          "spans": []
+        }
+      ],
+      "stackTraces": [
+        {
+          "stackTrace": "RuntimeError: connection refused\n  at ...",
+          "recordedAt": "2024-01-15T10:30:00Z",
+          "attributes": {"user_id": "123"},
+          "isMessage": false,
+          "isTask": false
+        }
+      ],
+      "metrics": [
+        {
+          "name": "cpu.used_pcnt",
+          "value": 45.2,
+          "recordedAt": "2024-01-15T10:30:00Z",
+          "tags": {}
+        }
+      ]
     }
   ]
 }
 ```
+
+Notes:
+- Timestamps are `recordedAt` (RFC 3339), never `timestamp`. `duration` is a Go `time.Duration`, i.e. integer nanoseconds (45200000 = 45.2ms).
+- Endpoints vs tasks share the `traces` array, split by `isTask`. `CollectionFrame` also carries `sessionRecordings` and `sessions`.
+- **Unknown fields are silently ignored**: a payload in the wrong shape (e.g. top-level `metrics`) still returns 200 but inserts nothing. When hand-crafting test payloads, confirm ingestion landed via `POST /api/metrics/query` (or the relevant list endpoint) instead of trusting the status code.
 
 ---
 
@@ -1269,6 +1414,7 @@ type PaginationParams struct {
      import { api } from '$lib/api'
      import { projectsState } from '$lib/state/projects.svelte'
      import { ErrorDisplay } from '$lib/components/ui/error-display'
+     import { getErrorMessage, getErrorStatus } from '$lib/utils/errors'
 
      let data = $state<DataType[]>([])
      let loading = $state(true)
@@ -1283,11 +1429,11 @@ type PaginationParams struct {
            projectId: projectsState.currentProjectId ?? undefined
          })
          data = response.data || []
-       } catch (e: any) {
-         if (e.status === 404) {
+       } catch (e) {
+         if (getErrorStatus(e) === 404) {
            notFound = true
          } else {
-           error = e.message || 'Failed to load data'
+           error = getErrorMessage(e) || 'Failed to load data'
          }
        } finally {
          loading = false
@@ -1321,10 +1467,10 @@ type PaginationParams struct {
 
 1. **Ensure SDK captures metric** (or add to `traceway.go` metrics collection)
 
-2. **Add repository query** in `backend/app/repositories/metrics.go`
+2. **Add repository query** to each telemetry backend's `metric_point.repository.go` under `backend/app/repositories/telemetry/{clickhouse,sqlite,duckdb}/`
    ```go
-   func (r *MetricRepository) GetNewMetric(projectID uuid.UUID, from, to time.Time) ([]MetricPoint, error) {
-       // Query metric_records table
+   func (r *metricPointRepository) GetNewMetric(ctx context.Context, projectId uuid.UUID, from, to time.Time) ([]models.TimeSeriesPoint, error) {
+       // Query metric_points with the backend's dialect
    }
    ```
 
@@ -1383,18 +1529,24 @@ type PaginationParams struct {
 
 ### Adding a New Framework
 
-Every framework addition touches multiple files across backend, frontend, and docs. Use this checklist to avoid missing any:
+**Backends do not get a new framework value.** OpenTelemetry is the single backend integration path, and `opentelemetry` is the only backend option in the project-creation picker (plus the preselected default). A new backend language or web framework is a *documentation and Connection-page* change, never a new project framework:
 
-1. **Backend** — `backend/app/controllers/project.controller.go`: Add to `validFrameworks` map and update the validation error message
-2. **Frontend state** — `frontend/src/lib/state/projects.svelte.ts`: Add to `Framework` type union and `FRAMEWORK_LABELS` map
-3. **Frontend combobox** — `frontend/src/lib/components/framework-combobox.svelte`: Add entry with correct group (Go / JavaScript / PHP / etc.)
-4. **Frontend icon** — `frontend/src/lib/components/framework-icon.svelte`: Add icon mapping for the new framework value
-5. **Framework code** — `frontend/src/lib/utils/framework-code.ts`: Add install command, integration code snippet, label, code language, and testing routes
-6. **Connection page** — `frontend/src/routes/connection/+page.svelte`: Add highlight language mapping and install description
-7. **Dashboard page** — `frontend/src/routes/+page.svelte`: Add highlight language mapping
-8. **Docs sidebar** — `docs/pages/client/_meta.json`: Add navigation entry
-9. **Docs SDK selector** — `docs/components/SdkContext.jsx`: Add to `SDK_OPTIONS` array and `PATH_SDK_MAP` object
-10. **Docs framework picker** — `docs/components/FrameworkPicker.jsx`: Add card to `FRAMEWORKS` array
-11. **Docs icon** — `docs/public/`: Add framework icon (PNG, ~45x45)
-12. **Docs page** — `docs/pages/client/<framework>/`: Create `_meta.json` and `index.mdx`
-13. **Docs OTel language table** — `docs/pages/client/otel/index.mdx`: Add row if the framework uses OTLP
+1. **Connection page targets** — `frontend/src/lib/utils/otel-setup.ts`: add the framework to the matching `OTEL_TARGETS` language entry (or add a new language target) and its setup steps
+2. **Docs guide** — `docs/pages/client/otel/<framework>/`: create `_meta.json` and `index.mdx`, then list it in `docs/pages/client/otel/_meta.json` and the "Next Steps" block of `docs/pages/client/otel/index.mdx`
+3. **Docs OTel language table** — `docs/pages/client/otel/index.mdx`: add a row
+4. **Docs framework picker** — nothing to do. `docs/components/FrameworkPicker.jsx` carries exactly one backend card, **OpenTelemetry**, pointing at `/client/otel`, so it mirrors the dashboard's project-creation picker. Do not add a per-framework backend card; the guide is discovered from `/client/otel` instead.
+5. **Combobox search keywords** — `frontend/src/lib/components/framework-combobox.svelte`: append the name to the OpenTelemetry entry's `keywords` so searching for it still finds the right option
+6. **README** — add to the supported-frameworks table if it warrants a row
+
+Only a **browser or mobile** framework needs a real new framework value, because those use platform SDKs with their own Connection-page content:
+
+1. **Backend** — `backend/app/controllers/project.controller.go`: add to `validFrameworks` and update the validation error message
+2. **Frontend state** — `frontend/src/lib/state/projects.svelte.ts`: add to the `Framework` union, `FRAMEWORK_LABELS`, and `MOBILE_FRAMEWORKS`/`FRONTEND_FRAMEWORKS`
+3. **Frontend combobox** — `frontend/src/lib/components/framework-combobox.svelte`: add an entry to the `Browser` or `Mobile` group with `keywords`
+4. **Frontend icon** — `frontend/src/lib/components/framework-icon.svelte`: add the icon mapping
+5. **Framework code** — `frontend/src/lib/utils/framework-code.ts`: add install command, integration snippet, label, code language, and testing routes
+6. **Connection page** — `frontend/src/routes/connection/+page.svelte`: add highlight language mapping and install description
+7. **Dashboard page** — `frontend/src/routes/+page.svelte`: add highlight language mapping
+8. **Docs** — `docs/pages/client/<framework>/`, `docs/pages/client/_meta.json`, `SDK_OPTIONS` + `FOLDER_SDK` in `docs/components/SdkContext.jsx`, `SDK_VISIBILITY` in `docs/theme.config.jsx`, `SDK_QUICK_START` in `docs/components/SdkSelector.jsx`, and a `FrameworkPicker.jsx` card
+
+Values removed from the picker (`gin`, `fiber`, `chi`, `fasthttp`, `stdlib`, `custom`, `nextjs`, `nestjs`, `express`, `remix`, `hono`, `cloudflare`, `symfony`, `laravel`, `django`) stay valid in `validFrameworks` and in `FRAMEWORK_LABELS` — existing projects still carry them and must keep rendering.

@@ -22,6 +22,7 @@ type ingester struct {
 	requestRate    atomic.Int64 // requests/sec, scaled by 1e3 so we keep fractional resolution
 	attemptedItems atomic.Int64
 	rejectedItems  atomic.Int64
+	okItems        atomic.Int64 // items in 2xx responses minus PartialSuccess rejects — rows that actually landed
 
 	// rng pool: each worker grabs one to avoid contending on the global source
 	rngPool sync.Pool
@@ -105,6 +106,14 @@ func (i *ingester) SnapshotAndResetItems() (attempted, rejected int64) {
 	return
 }
 
+// SnapshotAndResetOkItems returns items confirmed by 2xx responses (minus
+// OTLP PartialSuccess rejects) since the last call. The read-probe fill
+// tracks this instead of attempted items so admission-gate 503s and other
+// HTTP failures don't count phantom rows toward a fill target.
+func (i *ingester) SnapshotAndResetOkItems() int64 {
+	return i.okItems.Swap(0)
+}
+
 // Start launches the worker pool sized for the current request rate. The
 // passed ctx is used directly for HTTP requests so in-flight requests survive
 // across step boundaries; the limiter loop uses a derived acceptCtx that
@@ -129,7 +138,7 @@ func (i *ingester) Start(ctx context.Context) {
 				batchSize := int(i.batchSize.Load())
 				// HTTP uses the parent ctx (not acceptCtx) so requests in
 				// flight when StopAccepting fires aren't canceled mid-flight.
-				sendOneOTLP(ctx, i.client, i.cfg, i.sender, rng, batchSize, i.stats, &i.attemptedItems, &i.rejectedItems)
+				sendOneOTLP(ctx, i.client, i.cfg, i.sender, rng, batchSize, i.stats, &i.attemptedItems, &i.rejectedItems, &i.okItems)
 			}
 		}()
 	}

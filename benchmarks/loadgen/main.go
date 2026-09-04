@@ -18,6 +18,7 @@ type config struct {
 	target             string
 	projectToken       string
 	jwt                string
+	healthToken        string
 	projectId          string
 	signal             string
 	scenario           string
@@ -40,6 +41,7 @@ type config struct {
 	fillLevels         []int64
 	readThresholdMs    int
 	settleSeconds      time.Duration
+	maxDigestWait      time.Duration
 	fillBatchSize      int
 	fillRequestRate    float64
 	reportOut          string
@@ -59,6 +61,7 @@ func main() {
 	flag.StringVar(&cfg.target, "target", "", "Base URL of the system under test (e.g. http://10.0.0.2 or http://localhost:8087)")
 	flag.StringVar(&cfg.projectToken, "token", "", "Project bearer token for OTLP ingest endpoints")
 	flag.StringVar(&cfg.jwt, "jwt", "", "JWT for read endpoints (required when --scenario=read-probe)")
+	flag.StringVar(&cfg.healthToken, "health-token", "", "The SUT's HEALTH_DEEP_TOKEN. /api/health/deep is an operator endpoint (dashboard JWTs are rejected); without this the loadgen skips deep-health snapshots, losing dropped-row/saturation detection, merge-idle waits, and digestion gates.")
 	flag.StringVar(&cfg.projectId, "project-id", "", "Project UUID for read endpoints (required when --scenario=read-probe)")
 	flag.StringVar(&cfg.signal, "signal", "", "Which signal to benchmark: spans | metrics | logs (required)")
 	flag.StringVar(&cfg.scenario, "scenario", "throughput", "Scenario: throughput (default, two-phase ingest ramp) | read-probe (ingest to fill levels and probe a read)")
@@ -81,6 +84,7 @@ func main() {
 	flag.StringVar(&fillLevelsStr, "fill-levels", "100000,1000000,10000000,100000000", "Comma-separated row counts to fill before probing a read (read-probe scenario)")
 	flag.IntVar(&cfg.readThresholdMs, "read-threshold-ms", 5000, "Read latency threshold in ms; step fails if a probe exceeds it (read-probe scenario)")
 	flag.DurationVar(&cfg.settleSeconds, "settle-seconds", 10*time.Second, "Wait between finishing ingest and probing the read (read-probe scenario)")
+	flag.DurationVar(&cfg.maxDigestWait, "max-digest-wait", 10*time.Minute, "After each read-probe fill, poll /api/health/deep until the engine's db+WAL file sizes are stable across two consecutive polls (DuckDB checkpoints the WAL after ingest stops; probing mid-checkpoint measures a wedged engine, not query cost). Cap on that wait; 0 disables. No-op on backends without engine gauges (SQLite, ClickHouse).")
 	flag.IntVar(&cfg.fillBatchSize, "fill-batch-size", 8192, "OTLP batch size used during the fill phase (read-probe scenario)")
 	flag.Float64Var(&cfg.fillRequestRate, "fill-request-rate", 100, "OTLP request rate (req/sec) during the fill phase (read-probe scenario)")
 	flag.StringVar(&cfg.reportOut, "report-out", "", "Path to write JSON results (required)")
@@ -176,6 +180,7 @@ func main() {
 	writeCheckpoint := func() {
 		out.EndedAt = time.Now().UTC().Format(time.RFC3339)
 		out.ChRestarted = chRestarted.Load()
+		out.SutDied = sutDied.Load()
 		out.computeHeadline()
 		if err := writeReportAtomic(cfg.reportOut, &out); err != nil {
 			fmt.Fprintf(os.Stderr, "checkpoint write failed: %v\n", err)
@@ -204,6 +209,9 @@ func main() {
 		// phases — the final writeCheckpoint after the switch captures
 		// whatever data was collected up to this point.
 		if err := waitForSutHealthy(ctx, cfg.target, cfg.sutHealthTimeoutSeconds); err != nil {
+			if ctx.Err() == nil {
+				sutDied.Store(true)
+			}
 			fmt.Fprintf(stderrPrefix(), "SUT unhealthy after Phase 1 cooldown — skipping Phase 2/3: %v\n", err)
 			break
 		}
@@ -225,6 +233,9 @@ func main() {
 			waitForMergesIdle(ctx, cfg, httpClient, "phase 2 -> phase 3")
 		}
 		if err := waitForSutHealthy(ctx, cfg.target, cfg.sutHealthTimeoutSeconds); err != nil {
+			if ctx.Err() == nil {
+				sutDied.Store(true)
+			}
 			fmt.Fprintf(stderrPrefix(), "SUT unhealthy after Phase 2 cooldown — skipping Phase 3: %v\n", err)
 			break
 		}
@@ -257,6 +268,10 @@ func main() {
 	if chRestarted.Load() {
 		fmt.Fprintln(os.Stderr, "FAILED: ClickHouse restarted during the run; treating result as invalid")
 		os.Exit(1)
+	}
+	// Exit 0 unlike chRestarted: passing steps are still a valid lower bound.
+	if sutDied.Load() {
+		fmt.Fprintln(os.Stderr, "WARNING: SUT died after a failed step and never recovered; headline is a lower bound (cliff not bisected)")
 	}
 }
 
@@ -334,7 +349,7 @@ func waitForMergesIdle(ctx context.Context, cfg config, client *http.Client, lab
 	// and there are no merges to wait for. Without this fast-path the loop
 	// would burn the full --max-merge-idle-wait (default 5m) between every
 	// phase doing nothing useful.
-	if first := fetchCHSnapshot(ctx, cfg, client); !first.Reachable {
+	if first, _ := fetchDeepHealth(ctx, cfg, client); !first.Reachable {
 		fmt.Fprintf(stderrPrefix(), "merge-idle [%s]: CH not reachable (sqlite mode or backend down) — skipping wait\n", label)
 		return
 	}
@@ -350,7 +365,7 @@ func waitForMergesIdle(ctx context.Context, cfg config, client *http.Client, lab
 		if ctx.Err() != nil {
 			return
 		}
-		snap := fetchCHSnapshot(ctx, cfg, client)
+		snap, _ := fetchDeepHealth(ctx, cfg, client)
 		fmt.Fprintf(stderrPrefix(), "merge-idle [%s]: reachable=%t activeMerges=%d partsCount=%d longestMerge=%.1fs\n",
 			label, snap.Reachable, snap.ActiveMerges, snap.PartsCount, snap.LongestMergeSec)
 

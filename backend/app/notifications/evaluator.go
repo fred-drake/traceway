@@ -9,21 +9,48 @@ import (
 	"github.com/tracewayapp/traceway/backend/app/config"
 	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 	traceway "go.tracewayapp.com"
 )
 
 func StartEvaluator(ctx context.Context) {
 	config.Logln("Starting notification evaluator")
+	seedCooldowns(ctx)
 	startDedupPurger(ctx)
 	registerReportHook()
 	go startPolledLoop(ctx)
 }
 
+func pollInterval() time.Duration {
+	return config.PollSeconds(config.Config.NotificationPollSeconds, 60)
+}
+
+func seedCooldowns(ctx context.Context) {
+	entries, err := telemetry.FiredNotificationRepository.FindLastFiredPerRule(ctx)
+	if err != nil {
+		traceway.CaptureException(fmt.Errorf("failed to seed notification cooldowns: %w", err))
+	} else {
+		cooldowns.seed(entries)
+	}
+
+	// Backstop: fired_notifications rows only exist once an outcome is
+	// terminal, so a crash between enqueue and delivery would otherwise let
+	// the rule re-fire immediately at boot while its outbox row still exists.
+	enqueued, err := db.ExecuteTransaction(func(tx *sql.Tx) (map[int]time.Time, error) {
+		return transactional.OutboxRepository.LastEnqueuedPerRule(tx)
+	})
+	if err != nil {
+		traceway.CaptureException(fmt.Errorf("failed to seed notification cooldowns from outbox: %w", err))
+		return
+	}
+	cooldowns.seed(enqueued)
+}
+
 func startPolledLoop(ctx context.Context) {
 	defer traceway.Recover()
 
-	ticker := time.NewTicker(60 * time.Second)
+	ticker := time.NewTicker(pollInterval())
 	defer ticker.Stop()
 
 	for {
@@ -38,7 +65,7 @@ func startPolledLoop(ctx context.Context) {
 
 func evaluatePolledRules(ctx context.Context) {
 	rules, err := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.NotificationRuleWithChannel, error) {
-		return repositories.NotificationRuleRepository.FindEnabledPolledRules(tx)
+		return transactional.NotificationRuleRepository.FindEnabledPolledRules(tx)
 	})
 	if err != nil {
 		traceway.CaptureException(fmt.Errorf("failed to load polled notification rules: %w", err))

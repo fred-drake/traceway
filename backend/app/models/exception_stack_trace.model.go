@@ -7,14 +7,14 @@ import (
 )
 
 type ExceptionStackTrace struct {
-	Id              uuid.UUID         `json:"id" ch:"id"`
-	ProjectId       uuid.UUID         `json:"projectId" ch:"project_id"`
-	TraceId   *uuid.UUID        `json:"traceId" ch:"trace_id"`
-	TraceType string            `json:"traceType" ch:"trace_type"` // "endpoint" or "task"
-	ExceptionHash   string            `json:"exceptionHash" ch:"exception_hash"`
-	StackTrace      string            `json:"stackTrace" ch:"stack_trace"`
-	RecordedAt      time.Time         `json:"recordedAt" ch:"recorded_at"`
-	Attributes      map[string]string `json:"attributes" ch:"attributes"`
+	Id                 uuid.UUID         `json:"id" ch:"id"`
+	ProjectId          uuid.UUID         `json:"projectId" ch:"project_id"`
+	TraceId            *uuid.UUID        `json:"traceId" ch:"trace_id"`
+	TraceType          string            `json:"traceType" ch:"trace_type"` // "endpoint" or "task"
+	ExceptionHash      string            `json:"exceptionHash" ch:"exception_hash"`
+	StackTrace         string            `json:"stackTrace" ch:"stack_trace"`
+	RecordedAt         time.Time         `json:"recordedAt" ch:"recorded_at"`
+	Attributes         map[string]string `json:"attributes" ch:"attributes"`
 	AppVersion         string            `json:"appVersion" ch:"app_version"`
 	ServerName         string            `json:"serverName" ch:"server_name"`
 	IsMessage          bool              `json:"isMessage" ch:"is_message"`

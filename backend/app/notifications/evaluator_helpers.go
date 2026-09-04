@@ -12,7 +12,8 @@ import (
 	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/hooks"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 	traceway "go.tracewayapp.com"
 )
 
@@ -33,7 +34,7 @@ func evaluateEventRules(event hooks.ReportEvent) {
 	defer traceway.Recover()
 
 	rules, err := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.NotificationRuleWithChannel, error) {
-		return repositories.NotificationRuleRepository.FindEnabledEventRules(tx, event.ProjectId)
+		return transactional.NotificationRuleRepository.FindEnabledEventRules(tx, event.ProjectId)
 	})
 	if err != nil {
 		traceway.CaptureException(fmt.Errorf("failed to load event notification rules: %w", err))
@@ -54,6 +55,10 @@ func evaluateEventRules(event hooks.ReportEvent) {
 			evaluateErrorRegression(ctx, rule, event)
 		case "ai_trace_cost":
 			evaluateAiTraceCostEvent(rule, event)
+		case "ai_conversation_cost":
+			evaluateAiConversationCostEvent(ctx, rule, event)
+		case "ai_flagged_content":
+			evaluateAiFlaggedContentEvent(rule, event)
 		}
 	}
 }
@@ -86,15 +91,146 @@ func evaluateAiTraceCostEvent(rule *models.NotificationRuleWithChannel, event ho
 			continue
 		}
 
-		dedupKey := fmt.Sprintf("ai_cost:%d:%s", rule.Id, at.TraceName)
+		dedupKey := aiCostDedupKey(rule.Id, at.TraceName)
 		if dedup.isDuplicate(dedupKey, time.Duration(rule.CooldownMinutes)*time.Minute) {
 			continue
 		}
+		msg := buildAiTraceCostMessage(at.TraceName, at.TotalCost, cfg.ThresholdCost, projectName)
+		// Record before dispatch: a persistently failing dispatch retries once
+		// per cooldown window, never on every ingest event.
 		dedup.record(dedupKey)
-
-		msg := buildAiTraceCostMessage(at.TraceName, at.TotalCost, cfg.ThresholdCost, 0, projectName)
 		dispatch(rule, msg)
 	}
+}
+
+type aiConversationCostConfig struct {
+	ThresholdCost float64 `json:"thresholdCost"`
+}
+
+func evaluateAiConversationCostEvent(ctx context.Context, rule *models.NotificationRuleWithChannel, event hooks.ReportEvent) {
+	var cfg aiConversationCostConfig
+	if err := json.Unmarshal(rule.Config, &cfg); err != nil {
+		return
+	}
+	if cfg.ThresholdCost <= 0 {
+		return
+	}
+
+	cooldown := time.Duration(rule.CooldownMinutes) * time.Minute
+	var candidateIds []string
+	seen := map[string]struct{}{}
+	for _, at := range event.AiTraces {
+		if at.ConversationId == "" {
+			continue
+		}
+		if _, dup := seen[at.ConversationId]; dup {
+			continue
+		}
+		seen[at.ConversationId] = struct{}{}
+		if dedup.isDuplicate(aiConversationCostDedupKey(rule.Id, at.ConversationId), cooldown) {
+			continue
+		}
+		candidateIds = append(candidateIds, at.ConversationId)
+	}
+	if len(candidateIds) == 0 {
+		return
+	}
+
+	costs, err := telemetry.AiTraceRepository.GetConversationCosts(ctx, event.ProjectId, candidateIds, time.Now().Add(-24*time.Hour))
+	if err != nil {
+		traceway.CaptureException(fmt.Errorf("failed to load conversation costs for notification: %w", err))
+		return
+	}
+
+	projectName := getProjectName(event.ProjectId)
+	for _, conversationId := range candidateIds {
+		cost := costs[conversationId]
+		if cost < cfg.ThresholdCost {
+			continue
+		}
+		msg := buildAiConversationCostMessage(conversationId, cost, cfg.ThresholdCost, projectName)
+		// Record before dispatch: a persistently failing dispatch retries once
+		// per cooldown window, never on every ingest event.
+		dedup.record(aiConversationCostDedupKey(rule.Id, conversationId))
+		dispatch(rule, msg)
+	}
+}
+
+type aiFlaggedContentConfig struct {
+	Terms []string `json:"terms"`
+}
+
+func evaluateAiFlaggedContentEvent(rule *models.NotificationRuleWithChannel, event hooks.ReportEvent) {
+	var cfg aiFlaggedContentConfig
+	if err := json.Unmarshal(rule.Config, &cfg); err != nil {
+		return
+	}
+
+	filter := buildTermFilter(cfg.Terms)
+	cooldown := time.Duration(rule.CooldownMinutes) * time.Minute
+	projectName := ""
+
+	for _, at := range event.AiTraces {
+		if !at.Flagged {
+			continue
+		}
+		matched := matchFlaggedTerms(filter, at.FlaggedTerms)
+		if len(matched) == 0 {
+			continue
+		}
+
+		subject := at.ConversationId
+		if subject == "" {
+			subject = at.TraceName
+		}
+		dedupKey := aiFlaggedContentDedupKey(rule.Id, subject)
+		if dedup.isDuplicate(dedupKey, cooldown) {
+			continue
+		}
+		if projectName == "" {
+			projectName = getProjectName(event.ProjectId)
+		}
+		msg := buildAiFlaggedContentMessage(at.ConversationId, at.UserId, matched, projectName)
+		msg.DedupToken = subject
+		dedup.record(dedupKey)
+		dispatch(rule, msg)
+	}
+}
+
+// buildTermFilter normalizes the rule's configured terms. An empty config
+// means the rule fires on any flagged call.
+func buildTermFilter(terms []string) map[string]struct{} {
+	filter := map[string]struct{}{}
+	for _, term := range terms {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term != "" {
+			filter[term] = struct{}{}
+		}
+	}
+	return filter
+}
+
+// matchFlaggedTerms returns the flagged terms that pass the filter, or all of
+// them when the filter is empty.
+func matchFlaggedTerms(filter map[string]struct{}, flaggedTerms []string) []string {
+	if len(filter) == 0 {
+		return flaggedTerms
+	}
+	var matched []string
+	for _, term := range flaggedTerms {
+		if _, ok := filter[term]; ok {
+			matched = append(matched, term)
+		}
+	}
+	return matched
+}
+
+func countOccurrences(hashes []string) map[string]int {
+	occurrences := make(map[string]int, len(hashes))
+	for _, h := range hashes {
+		occurrences[h]++
+	}
+	return occurrences
 }
 
 func extractErrorType(stackTrace string) string {
@@ -112,9 +248,56 @@ func extractErrorType(stackTrace string) string {
 	return "Unknown Error"
 }
 
+func resolveTraceName(ctx context.Context, projectId uuid.UUID, traceId *uuid.UUID, traceType string, recordedAt *time.Time) string {
+	if traceId == nil {
+		return ""
+	}
+	switch traceType {
+	case "task":
+		task, err := telemetry.TaskRepository.FindById(ctx, projectId, *traceId, recordedAt)
+		if task == nil && err == nil && recordedAt != nil {
+			task, err = telemetry.TaskRepository.FindById(ctx, projectId, *traceId, nil)
+		}
+		if err != nil {
+			traceway.CaptureException(fmt.Errorf("failed to resolve task name for notification: %w", err))
+			return ""
+		}
+		if task == nil {
+			return ""
+		}
+		return task.TaskName
+	case "ai_trace":
+		trace, err := telemetry.AiTraceRepository.FindById(ctx, projectId, *traceId, recordedAt)
+		if trace == nil && err == nil && recordedAt != nil {
+			trace, err = telemetry.AiTraceRepository.FindById(ctx, projectId, *traceId, nil)
+		}
+		if err != nil {
+			traceway.CaptureException(fmt.Errorf("failed to resolve ai trace name for notification: %w", err))
+			return ""
+		}
+		if trace == nil {
+			return ""
+		}
+		return trace.TraceName
+	default:
+		endpoint, err := telemetry.EndpointRepository.FindById(ctx, projectId, *traceId, recordedAt)
+		if endpoint == nil && err == nil && recordedAt != nil {
+			endpoint, err = telemetry.EndpointRepository.FindById(ctx, projectId, *traceId, nil)
+		}
+		if err != nil {
+			traceway.CaptureException(fmt.Errorf("failed to resolve endpoint name for notification: %w", err))
+			return ""
+		}
+		if endpoint == nil {
+			return ""
+		}
+		return endpoint.Endpoint
+	}
+}
+
 func getProjectName(projectId uuid.UUID) string {
 	project, err := db.ExecuteTransaction(func(tx *sql.Tx) (*models.Project, error) {
-		return repositories.ProjectRepository.FindById(tx, projectId)
+		return transactional.ProjectRepository.FindById(tx, projectId)
 	})
 	if err != nil || project == nil {
 		return ""

@@ -10,7 +10,7 @@ on:
         required: true
         default: 'ccx13,ccx23,ccx33'
       modes:
-        description: 'Comma-separated DB modes (sqlite,pgch,managed-ch). managed-ch points at an external ClickHouse and requires the BENCH_CH_* repository secrets.'
+        description: 'Comma-separated DB modes (sqlite,duckdb,pgch,managed-ch). duckdb is the self-hosted DuckDB telemetry backend (SQLite main + DuckDB telemetry). managed-ch points at an external ClickHouse and requires the BENCH_CH_* repository secrets.'
         required: true
         default: 'sqlite,pgch'
       signals:
@@ -38,13 +38,42 @@ on:
         required: true
         type: boolean
         default: false
+      loadgen_tier:
+        description: 'Override loadgen instance type (e.g. cpx11). Leave empty for the per-location default (cax11 in EU, cpx11 in US). Use cpx11 when CAX/ARM capacity is unavailable in the chosen EU datacenter.'
+        required: false
+        default: ''
+      fill_batch_size:
+        description: 'Read-probe fill phase batch size override (default 8192). Lower this (e.g. 1024) for SQLite to limit per-tick ingest overshoot — the loadgen drains counters every 200ms, so 8192×100req/s adds ~160k items per tick, blowing past low fill-level targets. Ignored unless scenario=read-probe.'
+        required: false
+        default: ''
+      fill_request_rate:
+        description: 'Read-probe fill phase request rate override (default 100 req/s). Combined with fill_batch_size sets total ingest rate. Lower together for SQLite to keep step-target overshoot small. Ignored unless scenario=read-probe.'
+        required: false
+        default: ''
+      fill_levels:
+        description: 'Read-probe fill ladder override, comma-separated row counts (default 100000,1000000,10000000,100000000). e.g. 10000000,100000000,1000000000 to probe 1B — raise duration to cover the fill, it is a hard cap on the whole run. Ignored unless scenario=read-probe.'
+        required: false
+        default: ''
+      phase2_request_rates:
+        description: 'Throughput Phase 2 request-rate ladder override, comma-separated req/sec (default 1,5,25,100,400). Use a finer ramp (e.g. 1,5,10,15,20,25) to pin a cliff the default 5-to-25 jump skips over — needed when the failing step kills the SUT so post-fail bisection cannot run. Ignored unless scenario=throughput.'
+        required: false
+        default: ''
+      read_threshold_ms:
+        description: 'Read-probe pass threshold override in ms (default 5000; probe timeout is threshold + 1s). Raise for diagnostic dispatches (e.g. 60000) to measure how long slow queries actually take instead of truncating at 6s. Leave empty for headline runs so the series stays comparable. Ignored unless scenario=read-probe.'
+        required: false
+        default: ''
+      commit_results:
+        description: 'Commit results to the dispatched ref (REPLACES the whole scenario results folder with only this dispatch''s entries). Set false for exploratory or partial-matrix runs — per-entry result JSONs are still available as the matrix jobs'' workflow artifacts.'
+        required: true
+        type: boolean
+        default: true
 
 concurrency:
   group: benchmark-hardware
   cancel-in-progress: false
 
 permissions:
-  contents: write    # aggregate job commits the results back to main
+  contents: write    # aggregate job commits the results back to the dispatched ref
 
 jobs:
   setup:
@@ -88,6 +117,12 @@ jobs:
       HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
       BENCH_LOCATION: ${{ github.event.inputs.location }}
       BENCH_SCENARIO: ${{ github.event.inputs.scenario }}
+      LOADGEN_TIER: ${{ github.event.inputs.loadgen_tier }}
+      BENCH_FILL_BATCH_SIZE: ${{ github.event.inputs.fill_batch_size }}
+      BENCH_FILL_REQUEST_RATE: ${{ github.event.inputs.fill_request_rate }}
+      BENCH_FILL_LEVELS: ${{ github.event.inputs.fill_levels }}
+      BENCH_READ_THRESHOLD_MS: ${{ github.event.inputs.read_threshold_ms }}
+      BENCH_PHASE2_REQUEST_RATES: ${{ github.event.inputs.phase2_request_rates }}
       # Managed-ClickHouse credentials. Used only when modes contains
       # managed-ch; empty for sqlite/pgch entries (harmless — sut-bootstrap
       # only validates them when MODE=managed-ch).
@@ -97,7 +132,7 @@ jobs:
       CLICKHOUSE_DATABASE: ${{ secrets.BENCH_CH_DATABASE }}
       BENCH_CH_HTTPS_PORT: ${{ secrets.BENCH_CH_HTTPS_PORT }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install hcloud CLI
         run: |
@@ -114,7 +149,7 @@ jobs:
           printf '%s\n' "${{ secrets.BENCHMARK_SSH_PRIVATE_KEY }}" > "$key"
           echo "BENCHMARK_SSH_KEY=$key" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: '1.25'
 
@@ -131,7 +166,7 @@ jobs:
           fi
           ./benchmarks/scripts/run-matrix-entry.sh "${{ matrix.tier }}" "${{ matrix.mode }}" "${{ matrix.signal }}" "${{ github.event.inputs.duration }}" benchmarks/_artifact "" "${async_arg}"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: result-${{ matrix.tier }}-${{ matrix.mode }}-${{ matrix.signal }}${{ github.event.inputs.async_insert == 'true' && '-async' || '' }}
@@ -143,13 +178,13 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # Need history so the bot commit doesn't trample anything.
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN }}
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: /tmp/results-raw
 
@@ -172,12 +207,28 @@ jobs:
           echo "dst=${dst}" >> "$GITHUB_OUTPUT"
           ls -la "${dst}"
 
+          # Committing replaces the scenario folder wholesale, so a dispatch
+          # where some matrix entries failed (quota, OOM, flake) would push a
+          # PARTIAL result set, silently deleting the published JSONs for the
+          # missing entries. Fail instead: the per-entry artifacts are already
+          # uploaded, and a clean re-dispatch is cheap.
+          count_csv() { tr ',' '\n' <<<"$1" | sed 's/ //g' | grep -c . ; }
+          expected=$(( $(count_csv "${{ github.event.inputs.tiers }}") \
+                     * $(count_csv "${{ github.event.inputs.modes }}") \
+                     * $(count_csv "${{ github.event.inputs.signals }}") ))
+          staged=$(find "${dst}" -name '*.json' | wc -l | tr -d ' ')
+          if [[ "${staged}" -lt "${expected}" ]]; then
+              echo "only ${staged}/${expected} matrix entries produced results — refusing to commit a partial set" >&2
+              exit 1
+          fi
+
       - name: Render charts
         run: |
           pip install --quiet matplotlib
           python3 benchmarks/scripts/chart.py "${{ steps.stage.outputs.dst }}"
 
       - name: Commit results
+        if: ${{ github.event.inputs.commit_results == 'true' }}
         run: |
           set -euo pipefail
           git config user.name "traceway-bot"
@@ -192,9 +243,12 @@ jobs:
           tmp_staged="$(mktemp -d)/staged"
           cp -a "${staged}" "${tmp_staged}"
 
-          echo "syncing checkout to latest origin/main before committing"
-          git fetch origin main
-          git reset --hard origin/main
+          # Sync to the DISPATCHED ref, not main — a branch dispatch that
+          # resets to origin/main commits main+1 onto the branch and the
+          # push is rejected as non-fast-forward.
+          echo "syncing checkout to latest origin/${GITHUB_REF_NAME} before committing"
+          git fetch origin "${GITHUB_REF_NAME}"
+          git reset --hard "origin/${GITHUB_REF_NAME}"
 
           # Wipe whatever main had at this scenario folder (probably a prior
           # dispatch of the SAME scenario) and replace it with this
@@ -215,4 +269,5 @@ jobs:
             exit 0
           fi
           git commit -m "bench: ${{ github.event.inputs.scenario }} $(date -u +%Y-%m-%d)"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git push

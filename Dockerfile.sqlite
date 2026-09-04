@@ -7,7 +7,9 @@
 # ==============================================================================
 # Stage 1: Build Frontend
 # ==============================================================================
-FROM node:22-alpine AS frontend-builder
+ARG NODE_VERSION=26
+
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION}-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -21,15 +23,16 @@ ENV CLOUD_MODE=false
 RUN npm run build
 
 # ==============================================================================
-# Stage 2: Build Backend with embedded frontend (no pgch tag = SQLite mode)
+# Stage 2: Build Backend with embedded frontend (no storage tags = SQLite mode)
 # ==============================================================================
-FROM golang:1.25-alpine AS backend-builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS backend-builder
 
 WORKDIR /app/backend
 
 RUN apk add --no-cache git
 
 COPY backend/ ./
+COPY cli/ /app/cli/
 
 COPY --from=frontend-builder /app/frontend/build ./static/frontend/
 
@@ -37,9 +40,11 @@ RUN go mod edit -dropreplace=go.tracewayapp.com -dropreplace=go.tracewayapp.com/
 RUN go mod tidy
 RUN go mod download
 
-# Build WITHOUT the pgch tag so the SQLite codepath in app/db/db_sqlite.go
-# is selected. modernc.org/sqlite is pure Go, so CGO_ENABLED=0 is fine.
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o /traceway ./cmd/traceway
+# Build WITHOUT storage tags so the SQLite codepaths in app/db/db_transactional_sqlite.go
+# and db_telemetry_sqlite.go are selected. modernc.org/sqlite is pure Go, so CGO_ENABLED=0 is fine.
+ARG TARGETOS
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -ldflags="-s -w" -o /traceway ./cmd/traceway
 
 # ==============================================================================
 # Stage 3: Minimal runtime image
@@ -69,7 +74,7 @@ ENV GIN_MODE=release \
 
 EXPOSE 80 8082
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=3s --start-period=300s --retries=3 \
     CMD wget -qO- http://localhost/health || exit 1
 
 ENTRYPOINT ["/usr/local/bin/traceway"]

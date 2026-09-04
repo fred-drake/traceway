@@ -8,20 +8,51 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"time"
 )
+
+type endpointProbeResult struct {
+	Name      string  `json:"name"`
+	Path      string  `json:"path"`
+	LatencyMs float64 `json:"latencyMs"`
+	Ok        bool    `json:"ok"`
+	Error     string  `json:"error,omitempty"`
+}
 
 type readProbeStep struct {
 	FillLevelTarget      int64   `json:"fillLevelTarget"`
 	RowsIngested         int64   `json:"rowsIngested"`
 	IngestSecondsElapsed float64 `json:"ingestSecondsElapsed"`
-	ReadLatencyMs        float64 `json:"readLatencyMs"`
-	ReadOk               bool    `json:"readOk"`
-	Passed               bool    `json:"passed"`
-	FailReason           string  `json:"failReason,omitempty"`
+	// DroppedRows is cumulative since scenario start, mirroring RowsIngested.
+	// Nonzero means the SUT silently discarded rows during fill, so the true
+	// table size is RowsIngested minus DroppedRows.
+	DroppedRows int64 `json:"droppedRows,omitempty"`
+	// DigestSeconds is how long the SUT's engine needed after the fill before
+	// its db+WAL file sizes went stable (the WAL-checkpoint gate). Probes run
+	// after this wait, so latencies measure steady-state query cost, not a
+	// mid-checkpoint wedge. DigestTimedOut means the cap expired first and
+	// the probes ran against a possibly still-digesting engine.
+	DigestSeconds   float64               `json:"digestSeconds,omitempty"`
+	DigestTimedOut  bool                  `json:"digestTimedOut,omitempty"`
+	Probes          []endpointProbeResult `json:"probes"`
+	MedianLatencyMs float64               `json:"medianLatencyMs"`
+	// Back-compat: equals MedianLatencyMs and AND-of-all-probe-Ok respectively.
+	// Existing chart.py renderers (and post-1 readers) consume these.
+	ReadLatencyMs float64 `json:"readLatencyMs"`
+	ReadOk        bool    `json:"readOk"`
+	Passed        bool    `json:"passed"`
+	FailReason    string  `json:"failReason,omitempty"`
+}
+
+type readProbeEndpointDescriptor struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type readProbeResult struct {
+	Endpoints []readProbeEndpointDescriptor `json:"endpoints"`
+	// Back-compat: first endpoint's path. Older chart.py renderers read this.
 	ReadPath           string          `json:"readPath"`
 	ReadThresholdMs    int             `json:"readThresholdMs"`
 	SettleSeconds      int             `json:"settleSeconds"`
@@ -31,24 +62,37 @@ type readProbeResult struct {
 	MaxFillLevelPassed int64           `json:"maxFillLevelPassed"`
 }
 
-// runReadProbe walks the configured fill levels. For each level it ingests
-// rows until totalIngested >= target, settles for cfg.settleSeconds, then
-// issues one read probe. If the probe times out, errors, or exceeds
-// cfg.readThresholdMs, the step fails and the loop stops without ingesting
-// further.
 // readProbeCheckpoint is invoked after every fill-level step so the caller
 // can persist a partial report — we never want to lose progress when the
 // process dies mid-run.
 type readProbeCheckpoint func(readProbeResult)
 
+// runReadProbe walks the configured fill levels. For each level it ingests
+// rows until totalIngested >= target, settles for cfg.settleSeconds, then
+// issues one read probe **per configured endpoint** for the signal, records
+// per-endpoint latencies, and uses the median to pass/fail against
+// cfg.readThresholdMs. Any HTTP error on any probe fails the step.
 func runReadProbe(ctx context.Context, cfg config, ing *ingester, ingestStats *latencyTracker, client *http.Client, checkpoint readProbeCheckpoint) readProbeResult {
+	endpoints := endpointSetForSignal(cfg.signal)
+	descriptors := make([]readProbeEndpointDescriptor, len(endpoints))
+	for i, ep := range endpoints {
+		descriptors[i] = readProbeEndpointDescriptor{Name: ep.Name, Path: ep.Path}
+	}
 	res := readProbeResult{
-		ReadPath:        readPathForSignal(cfg.signal),
+		Endpoints:       descriptors,
 		ReadThresholdMs: cfg.readThresholdMs,
 		SettleSeconds:   int(cfg.settleSeconds.Seconds()),
 		FillBatchSize:   cfg.fillBatchSize,
 		FillRequestRate: cfg.fillRequestRate,
 	}
+	if len(endpoints) > 0 {
+		res.ReadPath = endpoints[0].Path
+	}
+
+	// The shared client carries a 30s Timeout that would silently cap probes
+	// below a raised --read-threshold-ms; probes get their own client so the
+	// per-probe context (threshold + 1s) is the only deadline.
+	probeClient := &http.Client{Transport: client.Transport}
 
 	ing.SetBatchSize(cfg.fillBatchSize)
 	ing.SetRequestRate(cfg.fillRequestRate)
@@ -56,7 +100,10 @@ func runReadProbe(ctx context.Context, cfg config, ing *ingester, ingestStats *l
 	// Reset the ingester counters before starting so totalIngested reflects
 	// only what this scenario sent.
 	ing.SnapshotAndResetItems()
+	ing.SnapshotAndResetOkItems()
 	ingestStats.SnapshotAndReset()
+
+	_, sutStatsBase := fetchDeepHealth(ctx, cfg, client)
 
 	var totalIngested int64
 
@@ -76,12 +123,29 @@ func runReadProbe(ctx context.Context, cfg config, ing *ingester, ingestStats *l
 		step.RowsIngested = totalIngested
 
 		// Drain whatever bumped between Stop and Snapshot.
-		extraAttempted, _ := ing.SnapshotAndResetItems()
-		totalIngested += extraAttempted
+		totalIngested += ing.SnapshotAndResetOkItems()
 		step.RowsIngested = totalIngested
 
-		fmt.Fprintf(stderrPrefix(), "read-probe fill=%d rows reached in %.1fs (signal=%s) — settling %ds\n",
-			step.RowsIngested, step.IngestSecondsElapsed, cfg.signal, res.SettleSeconds)
+		if sutStatsBase.Reachable {
+			if _, cur := fetchDeepHealth(ctx, cfg, client); cur.Reachable {
+				if dropped := cur.DroppedRowsTotal - sutStatsBase.DroppedRowsTotal; dropped > 0 {
+					step.DroppedRows = dropped
+					fmt.Fprintf(stderrPrefix(), "read-probe: SUT silently dropped %d rows during fill; true table size is below the fill target\n", dropped)
+				}
+			}
+		}
+
+		step.DigestSeconds, step.DigestTimedOut = waitForIngestDigestion(ctx, cfg, client.Transport)
+		if step.DigestTimedOut {
+			fmt.Fprintf(stderrPrefix(), "read-probe: engine still digesting after %.0fs cap — probing anyway\n", step.DigestSeconds)
+		}
+		// ClickHouse's post-ingest work is merges rather than a WAL
+		// checkpoint; give it the same courtesy before probing. Skips
+		// instantly on backends where CH isn't reachable.
+		waitForMergesIdle(ctx, cfg, client, fmt.Sprintf("fill %d -> probe", target))
+
+		fmt.Fprintf(stderrPrefix(), "read-probe fill=%d rows reached in %.1fs (signal=%s) — digested in %.1fs, settling %ds\n",
+			step.RowsIngested, step.IngestSecondsElapsed, cfg.signal, step.DigestSeconds, res.SettleSeconds)
 
 		select {
 		case <-time.After(cfg.settleSeconds):
@@ -95,25 +159,51 @@ func runReadProbe(ctx context.Context, cfg config, ing *ingester, ingestStats *l
 			break
 		}
 
-		latencyMs, readErr := probeRead(ctx, client, cfg)
-		step.ReadLatencyMs = latencyMs
+		probeResults := make([]endpointProbeResult, 0, len(endpoints))
+		allOk := true
+		latencies := make([]float64, 0, len(endpoints))
+		for _, ep := range endpoints {
+			latency, err := probeReadEndpoint(ctx, probeClient, cfg, ep)
+			pr := endpointProbeResult{
+				Name:      ep.Name,
+				Path:      ep.Path,
+				LatencyMs: latency,
+				Ok:        err == nil,
+			}
+			if err != nil {
+				pr.Error = err.Error()
+				allOk = false
+			}
+			probeResults = append(probeResults, pr)
+			latencies = append(latencies, latency)
+		}
+		step.Probes = probeResults
+
+		median := medianFloat(latencies)
+		step.MedianLatencyMs = median
+		step.ReadLatencyMs = median
+		step.ReadOk = allOk
+
 		switch {
-		case readErr != nil:
-			step.ReadOk = false
+		case !allOk:
 			step.Passed = false
-			step.FailReason = fmt.Sprintf("read error: %v (latency %.0fms)", readErr, latencyMs)
-		case latencyMs > float64(cfg.readThresholdMs):
-			step.ReadOk = true
+			// Find the first failed probe for the reason.
+			for _, pr := range probeResults {
+				if !pr.Ok {
+					step.FailReason = fmt.Sprintf("probe %s failed: %s (latency %.0fms)", pr.Name, pr.Error, pr.LatencyMs)
+					break
+				}
+			}
+		case median > float64(cfg.readThresholdMs):
 			step.Passed = false
-			step.FailReason = fmt.Sprintf("read latency %.0fms > %dms threshold", latencyMs, cfg.readThresholdMs)
+			step.FailReason = fmt.Sprintf("median latency %.0fms > %dms threshold across %d probes", median, cfg.readThresholdMs, len(probeResults))
 		default:
-			step.ReadOk = true
 			step.Passed = true
 			res.MaxFillLevelPassed = target
 		}
 
-		fmt.Fprintf(stderrPrefix(), "read-probe target=%d read=%.0fms ok=%t passed=%t %s\n",
-			target, latencyMs, step.ReadOk, step.Passed, step.FailReason)
+		fmt.Fprintf(stderrPrefix(), "read-probe target=%d median=%.0fms probes=%d allOk=%t passed=%t %s\n",
+			target, median, len(probeResults), allOk, step.Passed, step.FailReason)
 		res.Steps = append(res.Steps, step)
 		if checkpoint != nil {
 			checkpoint(res)
@@ -126,10 +216,12 @@ func runReadProbe(ctx context.Context, cfg config, ing *ingester, ingestStats *l
 	return res
 }
 
-// pollFillProgress drains attempted-item counters from the ingester until the
-// target is reached or the context cancels. Sub-second polling keeps overshoot
-// small (at fill-batch=8192 × 100 req/s the loadgen sends ~800k items/sec, so
-// 200ms granularity overshoots by ≤160k items — negligible at 100M fill).
+// pollFillProgress drains confirmed-item counters from the ingester until the
+// target is reached or the context cancels. Counting only 2xx-confirmed items
+// (not attempts) keeps the fill honest when the SUT sheds load with 503s.
+// Sub-second polling keeps overshoot small (at fill-batch=8192 × 100 req/s
+// the loadgen sends ~800k items/sec, so 200ms granularity overshoots by
+// ≤160k items — negligible at 100M fill).
 func pollFillProgress(ctx context.Context, ing *ingester, totalIngested *int64, target int64) {
 	tick := time.NewTicker(200 * time.Millisecond)
 	defer tick.Stop()
@@ -138,28 +230,110 @@ func pollFillProgress(ctx context.Context, ing *ingester, totalIngested *int64, 
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			attempted, _ := ing.SnapshotAndResetItems()
-			*totalIngested += attempted
+			*totalIngested += ing.SnapshotAndResetOkItems()
 		}
 	}
 }
 
-func readPathForSignal(signal string) string {
-	switch signal {
-	case "spans":
-		return "/api/endpoints/grouped"
-	case "metrics":
-		return "/api/metrics/application"
-	case "logs":
-		return "/api/logs"
+func medianFloat(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
 	}
-	return ""
+	sorted := make([]float64, len(values))
+	copy(sorted, values)
+	sort.Float64s(sorted)
+	mid := len(sorted) / 2
+	if len(sorted)%2 == 1 {
+		return sorted[mid]
+	}
+	return (sorted[mid-1] + sorted[mid]) / 2
 }
 
-// probeRead issues one HTTP read against the signal-specific endpoint and
-// returns wall-clock latency in ms plus any error. The request is hard-capped
-// at threshold + 1s so a hanging SUT can't deadlock the loop.
-func probeRead(ctx context.Context, client *http.Client, cfg config) (float64, error) {
+// readProbeEndpoint describes one HTTP probe target.
+type readProbeEndpoint struct {
+	Name  string
+	Path  string
+	Build func(cfg config, fromDate, toDate string, probeCtx context.Context) (*http.Request, error)
+}
+
+// endpointSetForSignal returns the 3 endpoints probed per fill-level for a
+// given signal. Locked 2026-06-08 (see POSTS.md decision log). Order matters:
+// the first entry's path becomes the back-compat readProbeResult.ReadPath.
+func endpointSetForSignal(signal string) []readProbeEndpoint {
+	switch signal {
+	case "spans":
+		return []readProbeEndpoint{
+			{Name: "endpoints-grouped", Path: "/api/endpoints/grouped", Build: buildPostJSON("/api/endpoints/grouped", spansGroupedBody)},
+			{Name: "endpoints-chart", Path: "/api/endpoints/chart", Build: buildPostJSON("/api/endpoints/chart", spansChartBody)},
+			{Name: "exception-stack-traces", Path: "/api/exception-stack-traces", Build: buildPostJSON("/api/exception-stack-traces", spansExceptionsBody)},
+		}
+	case "metrics":
+		return []readProbeEndpoint{
+			{Name: "metrics-server", Path: "/api/metrics/server", Build: buildGetQuery("/api/metrics/server", metricsTimeRangeQuery)},
+			{Name: "metrics-application", Path: "/api/metrics/application", Build: buildGetQuery("/api/metrics/application", metricsTimeRangeQuery)},
+			{Name: "dashboard", Path: "/api/dashboard", Build: buildGetQuery("/api/dashboard", metricsTimeRangeQuery)},
+		}
+	case "logs":
+		return []readProbeEndpoint{
+			{Name: "logs-severity-error", Path: "/api/logs", Build: buildPostJSON("/api/logs", logsSeverityErrorBody)},
+			{Name: "logs-body-search", Path: "/api/logs", Build: buildPostJSON("/api/logs", logsBodySearchBody)},
+			{Name: "logs-trace-id", Path: "/api/logs", Build: buildPostJSON("/api/logs", logsTraceIdBody)},
+		}
+	}
+	return nil
+}
+
+// waitForIngestDigestion blocks until the SUT's storage engine has absorbed
+// the fill burst, or cfg.maxDigestWait expires. DuckDB checkpoints the WAL
+// asynchronously after ingest stops; probing mid-checkpoint on a small box
+// measures a wedged engine, not query cost — the symptom is sub-millisecond
+// queries timing out uniformly. /api/health/deep is the canary: on DuckDB it
+// executes real engine queries, so it only answers promptly when a dashboard
+// query would too. "Digested" means two consecutive successful polls, 5s
+// apart, reporting identical db+WAL file sizes. Backends without engine
+// gauges (SQLite, ClickHouse) return on the first successful poll, keeping
+// their timing behavior identical to before this gate existed. Returns the
+// seconds waited and whether the cap expired first.
+func waitForIngestDigestion(ctx context.Context, cfg config, transport http.RoundTripper) (float64, bool) {
+	if cfg.maxDigestWait <= 0 {
+		return 0, false
+	}
+	pollClient := &http.Client{Timeout: 5 * time.Second, Transport: transport}
+	start := time.Now()
+	deadline := start.Add(cfg.maxDigestWait)
+	var prev *ingestStatsSnapshot
+	for time.Now().Before(deadline) {
+		if ctx.Err() != nil {
+			return time.Since(start).Seconds(), false
+		}
+		_, cur := fetchDeepHealth(ctx, cfg, pollClient)
+		if cur.Reachable {
+			if cur.DBSizeBytes == 0 && cur.WALSizeBytes == 0 {
+				return time.Since(start).Seconds(), false
+			}
+			if prev != nil && prev.DBSizeBytes == cur.DBSizeBytes && prev.WALSizeBytes == cur.WALSizeBytes {
+				return time.Since(start).Seconds(), false
+			}
+			snap := cur
+			prev = &snap
+		} else {
+			// A slow or failed poll is the engine (or the box) not answering —
+			// it breaks the stability streak rather than counting toward it.
+			prev = nil
+		}
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return time.Since(start).Seconds(), false
+		}
+	}
+	return time.Since(start).Seconds(), true
+}
+
+// probeReadEndpoint issues one HTTP request for the given endpoint and returns
+// wall-clock latency in ms plus any error. Hard-capped at threshold + 1s so a
+// hanging SUT can't deadlock the loop.
+func probeReadEndpoint(ctx context.Context, client *http.Client, cfg config, ep readProbeEndpoint) (float64, error) {
 	now := time.Now().UTC()
 	fromDate := now.Add(-24 * time.Hour).Format(time.RFC3339)
 	toDate := now.Format(time.RFC3339)
@@ -167,56 +341,9 @@ func probeRead(ctx context.Context, client *http.Client, cfg config) (float64, e
 	probeCtx, cancel := context.WithTimeout(ctx, time.Duration(cfg.readThresholdMs+1000)*time.Millisecond)
 	defer cancel()
 
-	var req *http.Request
-	var err error
-	switch cfg.signal {
-	case "spans":
-		body, _ := json.Marshal(map[string]any{
-			"fromDate":      fromDate,
-			"toDate":        toDate,
-			"orderBy":       "count",
-			"sortDirection": "desc",
-			"pagination":    map[string]int{"page": 1, "pageSize": 50},
-			"search":        "",
-		})
-		u, _ := url.Parse(cfg.target + "/api/endpoints/grouped")
-		q := u.Query()
-		q.Set("projectId", cfg.projectId)
-		u.RawQuery = q.Encode()
-		req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, u.String(), bytes.NewReader(body))
-		if err != nil {
-			return 0, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-	case "metrics":
-		u, _ := url.Parse(cfg.target + "/api/metrics/application")
-		q := u.Query()
-		q.Set("projectId", cfg.projectId)
-		q.Set("fromDate", fromDate)
-		q.Set("toDate", toDate)
-		u.RawQuery = q.Encode()
-		req, err = http.NewRequestWithContext(probeCtx, http.MethodGet, u.String(), nil)
-		if err != nil {
-			return 0, err
-		}
-	case "logs":
-		body, _ := json.Marshal(map[string]any{
-			"fromDate":   fromDate,
-			"toDate":     toDate,
-			"orderBy":    "timestamp desc",
-			"pagination": map[string]int{"page": 1, "pageSize": 50},
-		})
-		u, _ := url.Parse(cfg.target + "/api/logs")
-		q := u.Query()
-		q.Set("projectId", cfg.projectId)
-		u.RawQuery = q.Encode()
-		req, err = http.NewRequestWithContext(probeCtx, http.MethodPost, u.String(), bytes.NewReader(body))
-		if err != nil {
-			return 0, err
-		}
-		req.Header.Set("Content-Type", "application/json")
-	default:
-		return 0, fmt.Errorf("no read endpoint configured for signal %q", cfg.signal)
+	req, err := ep.Build(cfg, fromDate, toDate, probeCtx)
+	if err != nil {
+		return 0, err
 	}
 	req.Header.Set("Authorization", "Bearer "+cfg.jwt)
 
@@ -232,4 +359,125 @@ func probeRead(ctx context.Context, client *http.Client, cfg config) (float64, e
 		return elapsed, fmt.Errorf("status %d", resp.StatusCode)
 	}
 	return elapsed, nil
+}
+
+// buildPostJSON returns a request-builder that POSTs a JSON body. The body
+// callback receives the date range so it can populate fromDate/toDate.
+func buildPostJSON(path string, body func(fromDate, toDate string) map[string]any) func(cfg config, fromDate, toDate string, probeCtx context.Context) (*http.Request, error) {
+	return func(cfg config, fromDate, toDate string, probeCtx context.Context) (*http.Request, error) {
+		payload, err := json.Marshal(body(fromDate, toDate))
+		if err != nil {
+			return nil, err
+		}
+		u, err := url.Parse(cfg.target + path)
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("projectId", cfg.projectId)
+		u.RawQuery = q.Encode()
+		req, err := http.NewRequestWithContext(probeCtx, http.MethodPost, u.String(), bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	}
+}
+
+// buildGetQuery returns a request-builder that GETs with extra query params.
+func buildGetQuery(path string, query func(fromDate, toDate string) map[string]string) func(cfg config, fromDate, toDate string, probeCtx context.Context) (*http.Request, error) {
+	return func(cfg config, fromDate, toDate string, probeCtx context.Context) (*http.Request, error) {
+		u, err := url.Parse(cfg.target + path)
+		if err != nil {
+			return nil, err
+		}
+		q := u.Query()
+		q.Set("projectId", cfg.projectId)
+		for k, v := range query(fromDate, toDate) {
+			q.Set(k, v)
+		}
+		u.RawQuery = q.Encode()
+		return http.NewRequestWithContext(probeCtx, http.MethodGet, u.String(), nil)
+	}
+}
+
+// --- Per-endpoint body / query builders ------------------------------------
+
+func spansGroupedBody(fromDate, toDate string) map[string]any {
+	return map[string]any{
+		"fromDate":      fromDate,
+		"toDate":        toDate,
+		"orderBy":       "count",
+		"sortDirection": "desc",
+		"pagination":    map[string]int{"page": 1, "pageSize": 50},
+		"search":        "",
+	}
+}
+
+func spansChartBody(fromDate, toDate string) map[string]any {
+	return map[string]any{
+		"fromDate":        fromDate,
+		"toDate":          toDate,
+		"metricType":      "p95",
+		"intervalMinutes": 5,
+	}
+}
+
+func spansExceptionsBody(fromDate, toDate string) map[string]any {
+	return map[string]any{
+		"fromDate":        fromDate,
+		"toDate":          toDate,
+		"orderBy":         "count",
+		"pagination":      map[string]int{"page": 1, "pageSize": 50},
+		"search":          "",
+		"searchType":      "message",
+		"includeArchived": false,
+	}
+}
+
+func metricsTimeRangeQuery(fromDate, toDate string) map[string]string {
+	return map[string]string{
+		"fromDate": fromDate,
+		"toDate":   toDate,
+	}
+}
+
+func logsSeverityErrorBody(fromDate, toDate string) map[string]any {
+	// MinSeverity 17 = OTel SeverityNumber for ERROR.
+	return map[string]any{
+		"fromDate":      fromDate,
+		"toDate":        toDate,
+		"orderBy":       "timestamp",
+		"sortDirection": "desc",
+		"minSeverity":   17,
+		"pagination":    map[string]int{"page": 1, "pageSize": 50},
+	}
+}
+
+func logsBodySearchBody(fromDate, toDate string) map[string]any {
+	// "error" is short, common, and inside the 24h unscoped-body-search
+	// window allowed by /api/logs.
+	return map[string]any{
+		"fromDate":      fromDate,
+		"toDate":        toDate,
+		"orderBy":       "timestamp",
+		"sortDirection": "desc",
+		"search":        "error",
+		"searchType":    "body",
+		"pagination":    map[string]int{"page": 1, "pageSize": 50},
+	}
+}
+
+func logsTraceIdBody(fromDate, toDate string) map[string]any {
+	// Fixed dummy trace_id — the query exercises the trace_id index path;
+	// result count doesn't matter for latency measurement.
+	return map[string]any{
+		"fromDate":      fromDate,
+		"toDate":        toDate,
+		"orderBy":       "timestamp",
+		"sortDirection": "desc",
+		"traceId":       "00000000000000000000000000000001",
+		"pagination":    map[string]int{"page": 1, "pageSize": 50},
+	}
 }

@@ -15,6 +15,7 @@ import (
 var (
 	lastCHUptime atomic.Int64
 	chRestarted  atomic.Bool
+	sutDied      atomic.Bool
 )
 
 type stepResult struct {
@@ -26,8 +27,14 @@ type stepResult struct {
 	Rejected             int64           `json:"rejected"`
 	Ingest               latencySnapshot `json:"ingest"`
 	CH                   chSnapshot      `json:"ch"`
-	Passed               bool            `json:"passed"`
-	FailReason           string          `json:"failReason,omitempty"`
+	// SutIngest is the end-of-step write-path snapshot from /health/deep
+	// (cumulative counters plus DuckDB engine gauges); DroppedItems is the
+	// per-step delta of silently dropped rows, which fails the step when
+	// nonzero.
+	SutIngest    *ingestStatsSnapshot `json:"sutIngest,omitempty"`
+	DroppedItems int64                `json:"droppedItems,omitempty"`
+	Passed       bool                 `json:"passed"`
+	FailReason   string               `json:"failReason,omitempty"`
 }
 
 type phaseResult struct {
@@ -53,6 +60,9 @@ type finalReport struct {
 	MaxSustainableItemsPerSec float64          `json:"maxSustainableItemsPerSec,omitempty"`
 	MaxFillLevelPassed        int64            `json:"maxFillLevelPassed,omitempty"`
 	ChRestarted               bool             `json:"chRestarted,omitempty"`
+	// SutDied: passing steps stay valid but the headline is only a lower
+	// bound — the cliff was never bisected.
+	SutDied bool `json:"sutDied,omitempty"`
 }
 
 func (r *finalReport) computeHeadline() {
@@ -189,6 +199,9 @@ func runRateRamp(ctx context.Context, cfg config, ing *ingester, ingest *latency
 		}
 		if !s.Passed {
 			firstFailRate = rate
+			if !ensureSutRecovered(ctx, cfg, logPrefix) {
+				return res
+			}
 			break
 		}
 	}
@@ -222,10 +235,29 @@ func runRateRamp(ctx context.Context, cfg config, ing *ingester, ingest *latency
 			if checkpoint != nil {
 				checkpoint(res)
 			}
+			if !s.Passed && !ensureSutRecovered(ctx, cfg, logPrefix) {
+				break
+			}
 		}
 	}
 
 	return res
+}
+
+// ensureSutRecovered gates only failed steps — a crash can hide there, while
+// a passing step proves liveness. Without it, one fatal step leaves the rest
+// of the bisect firing at a dead server and converging to the last pass
+// instead of the real cliff.
+func ensureSutRecovered(ctx context.Context, cfg config, logPrefix string) bool {
+	if err := waitForSutHealthy(ctx, cfg.target, cfg.sutHealthTimeoutSeconds); err != nil {
+		// A canceled ctx is the run deadline, not a verdict on the SUT.
+		if ctx.Err() == nil {
+			sutDied.Store(true)
+			fmt.Fprintf(stderrPrefix(), "%s: SUT did not recover after failed step — ending phase, results are lower bounds: %v\n", logPrefix, err)
+		}
+		return false
+	}
+	return true
 }
 
 // runOneStep resizes the worker pool for the new rate, holds the step for
@@ -236,6 +268,8 @@ func runRateRamp(ctx context.Context, cfg config, ing *ingester, ingest *latency
 func runOneStep(ctx context.Context, cfg config, ing *ingester, ingest *latencyTracker, client *http.Client, stepNo, batchSize int, requestRate float64) stepResult {
 	ingest.SnapshotAndReset()
 	ing.SnapshotAndResetItems()
+
+	_, ingestStatsBase := fetchDeepHealth(ctx, cfg, client)
 
 	ing.Start(ctx)
 
@@ -254,7 +288,19 @@ func runOneStep(ctx context.Context, cfg config, ing *ingester, ingest *latencyT
 
 	snap := ingest.SnapshotAndReset()
 	attempted, rejected := ing.SnapshotAndResetItems()
-	ch := fetchCHSnapshot(ctx, cfg, client)
+	ch, ingestStatsEnd := fetchDeepHealth(ctx, cfg, client)
+
+	var droppedItems int64
+	if ingestStatsBase.Reachable && ingestStatsEnd.Reachable {
+		droppedItems = ingestStatsEnd.DroppedRowsTotal - ingestStatsBase.DroppedRowsTotal
+		if droppedItems < 0 {
+			droppedItems = 0
+		}
+	}
+	var sutIngest *ingestStatsSnapshot
+	if ingestStatsEnd.Reachable {
+		sutIngest = &ingestStatsEnd
+	}
 
 	// Restart detection: if ClickHouse's uptime is materially less than what
 	// it was at the previous step's snapshot, the CH process restarted during
@@ -286,7 +332,7 @@ func runOneStep(ctx context.Context, cfg config, ing *ingester, ingest *latencyT
 		actualIps = float64(actualItems) / elapsed.Seconds()
 	}
 
-	passed, reason := evaluateStep(cfg, snap, attempted, rejected, requestRate, elapsed)
+	passed, reason := evaluateStep(cfg, snap, attempted, rejected, requestRate, elapsed, droppedItems)
 	if restartedThisStep {
 		passed = false
 		reason = fmt.Sprintf("CH restarted mid-step (uptime %ds < previous %ds + step %ds)", ch.UptimeSec, prev, int64(elapsed.Seconds()))
@@ -301,19 +347,25 @@ func runOneStep(ctx context.Context, cfg config, ing *ingester, ingest *latencyT
 		Rejected:             rejected,
 		Ingest:               snap,
 		CH:                   ch,
+		SutIngest:            sutIngest,
+		DroppedItems:         droppedItems,
 		Passed:               passed,
 		FailReason:           reason,
 	}
 }
 
-// evaluateStep combines three failure criteria:
+// evaluateStep combines four failure criteria:
 //  1. HTTP-level error rate + OTLP partial-success rejections > threshold
 //     (combined item-error budget).
-//  2. Soft cliff: achieved request rate is far below target. This catches
+//  2. Silent drops: the SUT acked requests but its telemetry write path
+//     discarded rows mid-step (DuckDB drops rows the appender rejects).
+//     Throughput from such a step is not real ingested throughput, so any
+//     drop fails the step.
+//  3. Soft cliff: achieved request rate is far below target. This catches
 //     the "workers saturated but SUT not yet erroring" state, where latency
 //     has cliffed to multiple seconds and only error-rate-based detection
 //     would let the ramp keep climbing one more step before noticing.
-func evaluateStep(cfg config, snap latencySnapshot, attempted, rejected int64, targetRate float64, elapsed time.Duration) (bool, string) {
+func evaluateStep(cfg config, snap latencySnapshot, attempted, rejected int64, targetRate float64, elapsed time.Duration, droppedItems int64) (bool, string) {
 	totalReq := snap.OK + snap.Errors
 	if totalReq == 0 {
 		return false, "no requests completed"
@@ -327,6 +379,9 @@ func evaluateStep(cfg config, snap latencySnapshot, attempted, rejected int64, t
 	if combined > cfg.ingestErrThreshold {
 		return false, fmt.Sprintf("combined error rate %.2f%% (http %.2f%% + rejected %.2f%%) > %.2f%% threshold",
 			combined*100, httpErrRate*100, rejectRate*100, cfg.ingestErrThreshold*100)
+	}
+	if droppedItems > 0 {
+		return false, fmt.Sprintf("SUT silently dropped %d rows mid-step (acked but not stored)", droppedItems)
 	}
 	if targetRate > 0 && elapsed > 0 && cfg.softCliffRatio > 0 {
 		achievedRate := float64(snap.OK) / elapsed.Seconds()

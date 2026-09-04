@@ -1,30 +1,20 @@
 <script lang="ts">
-	import * as Select from '$lib/components/ui/select';
+	import ToolbarSelect from '$lib/components/traceway/toolbar-select.svelte';
+	import { ROOT_FILTER_OPTIONS } from './options';
 
 	type Props = {
 		value?: string;
+		class?: string;
+		onChange?: (value: string) => void;
 	};
 
-	let { value = $bindable('all') }: Props = $props();
-
-	const options = [
-		{ value: 'all', label: 'All' },
-		{ value: 'root', label: 'Root' },
-		{ value: 'non_root', label: 'Non-root' }
-	];
-
-	const label = $derived(options.find((o) => o.value === value)?.label ?? 'All');
+	let { value = $bindable('all'), class: className = 'w-[120px]', onChange }: Props = $props();
 </script>
 
-<Select.Root type="single" bind:value>
-	<Select.Trigger class="h-9 w-[120px] rounded-none border-r-0 shadow-none">
-		{label}
-	</Select.Trigger>
-	<Select.Content>
-		{#each options as option}
-			<Select.Item value={option.value} label={option.label}>
-				{option.label}
-			</Select.Item>
-		{/each}
-	</Select.Content>
-</Select.Root>
+<ToolbarSelect
+	bind:value
+	options={ROOT_FILTER_OPTIONS}
+	class={className}
+	ariaLabel="Filter by root or non-root"
+	{onChange}
+/>

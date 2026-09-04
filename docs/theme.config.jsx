@@ -3,28 +3,20 @@ import SdkSelector from "./components/SdkSelector";
 import HiddenItem from "./components/HiddenItem";
 import { useSdk } from "./components/SdkContext";
 
+// Keyed by the first path segment after /client/. Every OTel-based backend guide
+// now lives under /client/otel/*, so the whole backend story is one `otel` entry.
 const SDK_VISIBILITY = {
-  "gin-middleware": "go-gin",
-  "chi-middleware": "go-chi",
-  "fiber-middleware": "go-fiber",
-  "fasthttp-middleware": "go-fasthttp",
-  "http-middleware": "go-http",
-  sdk: "go-",
-  "node-sdk": "js-node",
-  nestjs: "js-nestjs",
-  hono: "js-hono",
+  otel: "otel",
   react: "js-react",
+  "react-native": "react-native",
   vue: "js-vue",
   svelte: "js-svelte",
   jquery: "js-jquery",
   "js-sdk": ["js-react", "js-vue", "js-svelte", "js-jquery", "js-generic"],
   openrouter: "openrouter",
-  otel: "otel",
-  cloudflare: "cloudflare",
-  nextjs: "js-nextjs",
-  symfony: "php-symfony",
   flutter: "flutter",
   android: "android",
+  ios: "ios",
 };
 
 export default {
@@ -34,7 +26,7 @@ export default {
       <img
         src="/traceway-logo-white.png"
         alt="Traceway"
-        style={{ height: "32px" }}
+        style={{ height: "28px" }}
       />
     );
   },
@@ -60,13 +52,16 @@ export default {
         name="description"
         content="Traceway - Error tracking and monitoring platform"
       />
-      <meta name="theme-color" content="#05070c" />
+      <meta name="theme-color" content="#000000" />
       <meta name="color-scheme" content="dark" />
+      <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+      <link rel="alternate icon" href="/favicon.ico" sizes="any" />
+      <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     </>
   ),
-  // Electric Indigo (#7c5cff) ≈ hsl(253, 100%, 68%)
-  primaryHue: 253,
-  primarySaturation: 100,
+  // Dashboard blue (oklch(0.546 0.245 262.881) ≈ #2563eb) ≈ hsl(221, 83%, 53%)
+  primaryHue: 221,
+  primarySaturation: 83,
   darkMode: false,
   nextThemes: {
     defaultTheme: "dark",
@@ -80,10 +75,12 @@ export default {
         return <SdkSelector />;
       }
 
-      for (const [folder, requiredSdk] of Object.entries(SDK_VISIBILITY)) {
-        if (route && route.includes(`/${folder}`)) {
-          return <SdkGuard requiredSdk={requiredSdk}>{title}</SdkGuard>;
-        }
+      const segment = route?.startsWith("/client")
+        ? route.split("/").filter(Boolean)[1]
+        : undefined;
+      const requiredSdk = segment ? SDK_VISIBILITY[segment] : undefined;
+      if (requiredSdk !== undefined) {
+        return <SdkGuard requiredSdk={requiredSdk}>{title}</SdkGuard>;
       }
 
       return <>{title}</>;
@@ -102,6 +99,9 @@ export default {
 
 function SdkGuard({ requiredSdk, children }) {
   const { sdk } = useSdk();
+  if (!sdk) {
+    return <HiddenItem />;
+  }
   let visible;
   if (Array.isArray(requiredSdk)) {
     visible = requiredSdk.includes(sdk);

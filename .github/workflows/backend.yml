@@ -1,0 +1,351 @@
+name: Backend
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      # backend/go.mod `replace`s the local cli module and app/services/mcpmount
+      # imports cli/pkg/{client,mcpserver}, so a cli-only change can break the
+      # backend build. cli.yml already lists backend/** for the same reason.
+      - "cli/**"
+      - ".github/workflows/backend.yml"
+  pull_request:
+    types: [labeled]
+    paths:
+      - "backend/**"
+      - "cli/**"
+      - ".github/workflows/backend.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  sqlite:
+    name: Test (dual SQLite)
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        id: setup-go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          # Cached per build-tag set below instead: setup-go keys only on
+          # go.sum, which is identical across these three jobs, so they would
+          # race for one key and the winner's cache would then be frozen --
+          # leaving the duckdb job to re-fetch ~131MB of libduckdb every run.
+          cache: false
+
+      # The Go version is part of the key because both cached trees depend on
+      # it: go-build entries are compiler-keyed, and a Go bump otherwise leaves
+      # the superseded toolchain module sitting in ~/go/pkg/mod, which the
+      # run_id rotation below then copies forward on every run.
+      - name: Cache Go modules and build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-sqlite-${{ hashFiles('backend/go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-sqlite-${{ hashFiles('backend/go.sum') }}-
+            go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-sqlite-
+
+      # CGO_ENABLED=0 mirrors Dockerfile.sqlite, so CI links what ships.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./cmd/traceway ./cmd/traceway-runner
+
+      # release-traceway.yml cross-builds the runner for linux/darwin/windows,
+      # but app/synthetics/browserexec/proc_windows.go is `//go:build windows`
+      # and compiles in no other job -- editing its proc_unix.go sibling would
+      # break the release build with every PR check still green.
+      - name: Cross-compile runner for released platforms
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          for target in "windows amd64" "darwin arm64" "linux arm64"; do
+            set -- $target
+            echo "  $1/$2"
+            GOOS=$1 GOARCH=$2 go build -o /dev/null ./cmd/traceway-runner
+          done
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l reports unformatted files"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        env:
+          CGO_ENABLED: "1"
+        run: go vet ./...
+
+      # The race detector requires cgo, so this step cannot inherit the
+      # CGO_ENABLED=0 above. Worth the divergence: the backend runs the outbox
+      # drain, on-call escalator, synthetics scheduler and recordings uploader
+      # as long-lived goroutines over shared state.
+      - name: Test
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race -count=1 ./...
+
+  duckdb:
+    name: Test (DuckDB telemetry)
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      # duckdb-go bundles prebuilt static libs for glibc and needs cgo;
+      # mirrors Dockerfile.duckdb.
+      CGO_ENABLED: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        id: setup-go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - name: Cache Go modules and build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-duckdb-${{ hashFiles('backend/go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-duckdb-${{ hashFiles('backend/go.sum') }}-
+            go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-duckdb-
+
+      # Retained even though the ./... test scope below compiles every package
+      # too: this fails fast with a plain build error before any test binary is
+      # linked, which is a clearer signal than a compile failure attributed to
+      # a test package.
+      - name: Build
+        run: go build -tags telemetry_duckdb ./...
+
+      # The DuckDB harness opens an in-memory database, so no service
+      # containers are needed. The scope is ./... so that test files gated on
+      # this tag run somewhere at all -- app/retention/log_cap_duckdb_test.go
+      # and the telemetry_duckdb repository harness are compiled out of the
+      # untagged job, and app/controllers is where the missing !telemetry_duckdb
+      # constraint this commit fixes went unnoticed under the narrower scope.
+      - name: Test
+        run: go test -tags telemetry_duckdb -count=1 ./...
+
+  pgch:
+    name: Test (PostgreSQL + ClickHouse)
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+
+    # Same images docker-compose.yml pins, so CI exercises what is shipped.
+    # postgres keeps a start-period, mirroring compose: without it, probes fired
+    # during initdb (which runs a socket-only server first) count against the
+    # retry budget and can report healthy before TCP is actually up.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: traceway
+          POSTGRES_PASSWORD: traceway
+          POSTGRES_DB: traceway_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U traceway"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-start-period 10s
+          --health-retries 10
+
+      # CLICKHOUSE_SKIP_USER_SETUP keeps the image's stock users.xml, whose
+      # `default` user accepts ::/0. Without it the entrypoint overwrites
+      # default-user.xml with <networks>::1, 127.0.0.1</networks> -- the
+      # "disabling network access for user 'default'" line in the container log
+      # -- which locks out every connection this job makes: they all arrive from
+      # the runner over the published port, so ClickHouse sees the bridge
+      # gateway address, not localhost.
+      #
+      # No --health-cmd on purpose. A healthcheck that never passes kills the job
+      # in "Initialize containers", before a single step runs, and the only
+      # diagnostic left is the word "unhealthy" plus the container's stdout --
+      # four lines of preamble, because ClickHouse logs to files. The wait step
+      # below polls the published port instead: it checks what this job actually
+      # needs (reachability from the runner, not from inside the container) and
+      # leaves any failure inside a step that can print the server's real log.
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        env:
+          CLICKHOUSE_SKIP_USER_SETUP: "1"
+        ports:
+          - 8123:8123
+          - 9000:9000
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        id: setup-go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache: false
+
+      - name: Cache Go modules and build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-pgch-${{ hashFiles('backend/go.sum') }}-${{ github.run_id }}
+          restore-keys: |
+            go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-pgch-${{ hashFiles('backend/go.sum') }}-
+            go-${{ runner.os }}-${{ steps.setup-go.outputs.go-version }}-pgch-
+
+      # CGO_ENABLED=0 mirrors Dockerfile and Dockerfile.minimal.
+      - name: Build
+        env:
+          CGO_ENABLED: "0"
+        run: go build -tags "transactional_pg telemetry_ch" ./cmd/traceway ./cmd/traceway-runner
+
+      # Placed after the build so ClickHouse warms up while Go compiles, and at
+      # the first query rather than at the top of the job.
+      - name: Wait for ClickHouse
+        run: |
+          for i in $(seq 1 90); do
+            if curl -sfo /dev/null 'http://localhost:8123/ping'; then
+              echo "ClickHouse answered /ping after ${i}s"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::ClickHouse never answered /ping on localhost:8123"
+          cid=$(docker ps -aq --filter 'ancestor=clickhouse/clickhouse-server:24.8-alpine' | head -1)
+          docker logs "$cid" || true
+          docker exec "$cid" tail -n 100 /var/log/clickhouse-server/clickhouse-server.err.log || true
+          exit 1
+
+      # Migrations are applied over ClickHouse's HTTP interface rather than with
+      # clickhouse-client, which is not on the runner. Every file in
+      # migrations/ch holds exactly one statement (the golang-migrate ClickHouse
+      # driver is built with MultiStatementEnabled: false), so one request per
+      # file is the whole contract, and it keeps per-file error attribution.
+      - name: Create ClickHouse database
+        run: |
+          curl -sS --fail-with-body 'http://localhost:8123/' \
+            --data-binary 'CREATE DATABASE IF NOT EXISTS traceway_test'
+
+      # Unlike scripts/test-pgch-entrypoint.sh these are NOT suffixed with
+      # `|| true`: a migration that fails there silently yields a half-built
+      # schema and surfaces later as confusing test failures.
+      - name: Apply ClickHouse migrations
+        run: |
+          for f in app/migrations/ch/*.up.sql; do
+            echo "  ${f##*/}"
+            curl -sS --fail-with-body 'http://localhost:8123/?database=traceway_test' \
+              --data-binary "@$f"
+          done
+
+      # Piped into a single psql rather than one process per file: postgres:17
+      # defaults to scram-sha-256, so 141 connections means 141 PBKDF2
+      # handshakes. \echo above each \i preserves per-file attribution, and
+      # ON_ERROR_STOP=1 still aborts at the first failure.
+      - name: Apply PostgreSQL migrations
+        env:
+          PGPASSWORD: traceway
+        run: |
+          for f in app/migrations/pg/*.up.sql; do
+            printf '\\echo :: %s\n\\i %s\n' "${f##*/}" "$f"
+          done | psql -v ON_ERROR_STOP=1 -h localhost -U traceway -d traceway_test -f -
+
+      # setupTestDB skips unless TEST_CLICKHOUSE_SERVER is set, so these are
+      # what opts the tagged suite in -- without them the job would report ok
+      # while running nothing. app/chdb is included because batch_retry_test.go
+      # is `//go:build telemetry_ch` and would otherwise run in no job at all;
+      # it uses fakes and needs no live ClickHouse. app/migrations is included
+      # for the same reason: migrate_logger_test.go is tagged
+      # `transactional_pg || telemetry_ch` and needs no database either.
+      #
+      # -json is written to a file for the tally below and replayed through jq
+      # so the log still reads like ordinary `go test` output. pipefail is set
+      # explicitly: the default shell here is `bash -e`, which takes the exit
+      # status of the last command in a pipeline -- without it jq's success
+      # would mask a failing test run.
+      - name: Test
+        env:
+          CGO_ENABLED: "0"
+          TEST_CLICKHOUSE_SERVER: localhost:9000
+          TEST_CLICKHOUSE_DATABASE: traceway_test
+          TEST_POSTGRES_HOST: localhost
+          TEST_POSTGRES_DATABASE: traceway_test
+          TEST_POSTGRES_USERNAME: traceway
+          TEST_POSTGRES_PASSWORD: traceway
+        run: |
+          set -o pipefail
+          go test -json -tags "transactional_pg telemetry_ch" -count=1 \
+            ./app/repositories/... ./app/chdb/... ./app/migrations/... \
+            | tee "$RUNNER_TEMP/pgch-tests.jsonl" \
+            | jq -j 'select(.Action == "output") | .Output'
+
+      # Green and "ran something" are not the same claim here. Every test in
+      # this suite reaches live ClickHouse and PostgreSQL through setupTestDB,
+      # which calls t.Skip when TEST_CLICKHOUSE_SERVER is missing -- and a
+      # package whose every test skipped still prints "ok". Dropping one env
+      # var above would leave this job passing while asserting nothing, which
+      # is the one failure mode a test workflow must not have.
+      #
+      # Package-level "skip" events (the `[no test files]` packages) carry no
+      # .Test field and are excluded; only skipped *tests* count. If a
+      # deliberately skippable test is ever added here, exclude it by name
+      # rather than deleting the guard.
+      #
+      # The pass tally counts top-level tests only -- subtests emit their own
+      # pass events, and a count inflated by them could not be compared against
+      # the suite size. Skips are counted at every level, subtests included.
+      - name: Assert the suite actually ran
+        run: |
+          results="$RUNNER_TEMP/pgch-tests.jsonl"
+          skipped=$(jq -r 'select(.Action == "skip" and .Test != null) | "\(.Package) \(.Test)"' "$results")
+          passed=$(jq -r 'select(.Action == "pass" and .Test != null and (.Test | contains("/") | not)) | .Test' "$results" | wc -l)
+
+          if [ -n "$skipped" ]; then
+            echo "::error::pgch suite skipped $(printf '%s\n' "$skipped" | wc -l) test(s) -- it must run against the service containers, not skip past them"
+            printf '%s\n' "$skipped"
+            exit 1
+          fi
+
+          if [ "$passed" -eq 0 ]; then
+            echo "::error::pgch suite ran no tests at all"
+            exit 1
+          fi
+
+          echo "$passed tests ran, 0 skipped"

@@ -1,0 +1,109 @@
+name: Release CLI
+
+on:
+  push:
+    tags:
+      - 'backend/v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (X.Y.Z, no leading v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+          else
+            TAG="${{ github.ref_name }}"
+            echo "version=${TAG#backend/v}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate version format
+        run: |
+          if ! [[ "${{ steps.version.outputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: version must be in X.Y.Z format (got '${{ steps.version.outputs.version }}')"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Check tag does not already exist
+        run: |
+          TAG="cli/v${{ steps.version.outputs.version }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "Error: tag $TAG already exists"
+            exit 1
+          fi
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: cli/go.mod
+          cache-dependency-path: cli/go.sum
+
+      - name: Build cross-platform binaries
+        working-directory: cli
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # OS ARCH LABEL — LABEL is the user-facing arch name in the archive filename
+          PAIRS=(
+            "linux amd64 x86_64"
+            "linux arm64 arm64"
+            "darwin amd64 x86_64"
+            "darwin arm64 arm64"
+            "windows amd64 x86_64"
+          )
+          for entry in "${PAIRS[@]}"; do
+            read -r OS ARCH LABEL <<< "$entry"
+            STAGE="dist/staging/${OS}_${LABEL}"
+            mkdir -p "$STAGE"
+            BIN="traceway"
+            [[ "$OS" == "windows" ]] && BIN="traceway.exe"
+            echo "Building $OS/$ARCH -> $STAGE/$BIN"
+            GOOS="$OS" GOARCH="$ARCH" go build -trimpath -ldflags "-X main.version=${VERSION}" -o "$STAGE/$BIN" ./cmd/traceway
+            cp README.md "$STAGE/"
+            cp ../LICENSE "$STAGE/"
+            ARCHIVE_BASE="traceway_${VERSION}_${OS}_${LABEL}"
+            if [[ "$OS" == "windows" ]]; then
+              (cd "$STAGE" && zip -q "../../${ARCHIVE_BASE}.zip" *)
+            else
+              tar -C "$STAGE" -czf "dist/${ARCHIVE_BASE}.tar.gz" .
+            fi
+          done
+          rm -rf dist/staging
+          ls -la dist
+
+      - name: Generate checksums
+        working-directory: cli/dist
+        run: |
+          sha256sum * > checksums.txt
+          cat checksums.txt
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          NOTES="CLI v${VERSION}, released alongside [Backend v${VERSION}](https://github.com/${{ github.repository }}/releases/tag/backend/v${VERSION})."
+          gh release create "cli/v${VERSION}" \
+            --target "${{ github.sha }}" \
+            --title "CLI v${VERSION}" \
+            --notes "$NOTES" \
+            cli/dist/*

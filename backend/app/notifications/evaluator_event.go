@@ -1,4 +1,4 @@
-//go:build pgch
+//go:build telemetry_ch
 
 package notifications
 
@@ -19,8 +19,8 @@ func evaluateNewError(ctx context.Context, rule *models.NotificationRuleWithChan
 	var cfg newErrorConfig
 	json.Unmarshal(rule.Config, &cfg)
 
-	for _, hash := range event.ExceptionHashes {
-		dedupKey := fmt.Sprintf("%d:%s", rule.Id, hash)
+	for hash, batchOccurrences := range countOccurrences(event.ExceptionHashes) {
+		dedupKey := errorDedupKey(rule.Id, hash)
 		if dedup.isDuplicate(dedupKey, time.Duration(rule.CooldownMinutes)*time.Minute) {
 			continue
 		}
@@ -34,9 +34,7 @@ func evaluateNewError(ctx context.Context, rule *models.NotificationRuleWithChan
 			continue
 		}
 
-		// count > 1 means this hash already existed before this batch
-		if count > 1 {
-			// Check if this hash was archived (resolved) — if so, a re-occurrence should be treated as new
+		if count > uint64(batchOccurrences) {
 			var archivedCount uint64
 			archErr := chdb.Conn.QueryRow(ctx,
 				"SELECT count() FROM archived_exceptions FINAL WHERE project_id = ? AND exception_hash = ?",
@@ -45,7 +43,6 @@ func evaluateNewError(ctx context.Context, rule *models.NotificationRuleWithChan
 				continue
 			}
 
-			// Archived — only fire if this is the first re-occurrence after archiving
 			var postArchiveCount uint64
 			archErr = chdb.Conn.QueryRow(ctx,
 				"SELECT count() FROM exception_stack_traces WHERE project_id = ? AND exception_hash = ? AND recorded_at > (SELECT max(archived_at) FROM archived_exceptions FINAL WHERE project_id = ? AND exception_hash = ?)",
@@ -55,7 +52,7 @@ func evaluateNewError(ctx context.Context, rule *models.NotificationRuleWithChan
 				continue
 			}
 
-			if postArchiveCount > 1 {
+			if postArchiveCount > uint64(batchOccurrences) {
 				continue
 			}
 		}
@@ -66,16 +63,18 @@ func evaluateNewError(ctx context.Context, rule *models.NotificationRuleWithChan
 			continue
 		}
 
-		dedup.record(dedupKey)
 		projectName := getProjectName(rule.ProjectId)
 		msg := buildNewErrorMessage(details, projectName)
+		// Record before dispatch: a persistently failing dispatch retries once
+		// per cooldown window, never on every ingest event.
+		dedup.record(dedupKey)
 		dispatch(rule, msg)
 	}
 }
 
 func evaluateErrorRegression(ctx context.Context, rule *models.NotificationRuleWithChannel, event hooks.ReportEvent) {
-	for _, hash := range event.ExceptionHashes {
-		dedupKey := fmt.Sprintf("%d:%s", rule.Id, hash)
+	for hash := range countOccurrences(event.ExceptionHashes) {
+		dedupKey := errorDedupKey(rule.Id, hash)
 		if dedup.isDuplicate(dedupKey, time.Duration(rule.CooldownMinutes)*time.Minute) {
 			continue
 		}
@@ -95,21 +94,24 @@ func evaluateErrorRegression(ctx context.Context, rule *models.NotificationRuleW
 		}
 
 		details := getExceptionDetails(ctx, event.ProjectId, hash)
-		dedup.record(dedupKey)
 		projectName := getProjectName(rule.ProjectId)
 		msg := buildErrorRegressionMessage(details, projectName)
+		// Record before dispatch: a persistently failing dispatch retries once
+		// per cooldown window, never on every ingest event.
+		dedup.record(dedupKey)
 		dispatch(rule, msg)
 	}
 }
 
 func getExceptionDetails(ctx context.Context, projectId uuid.UUID, hash string) ExceptionDetails {
 	var id uuid.UUID
-	var stackTrace, appVersion, serverName, attributesJSON string
+	var traceId *uuid.UUID
+	var stackTrace, traceType, appVersion, serverName, attributesJSON string
 	var recordedAt time.Time
 
 	err := chdb.Conn.QueryRow(ctx,
-		"SELECT id, stack_trace, attributes, app_version, server_name, recorded_at FROM exception_stack_traces WHERE project_id = ? AND exception_hash = ? ORDER BY recorded_at DESC LIMIT 1",
-		projectId, hash).Scan(&id, &stackTrace, &attributesJSON, &appVersion, &serverName, &recordedAt)
+		"SELECT id, trace_id, trace_type, stack_trace, attributes, app_version, server_name, recorded_at FROM exception_stack_traces WHERE project_id = ? AND exception_hash = ? ORDER BY recorded_at DESC LIMIT 1",
+		projectId, hash).Scan(&id, &traceId, &traceType, &stackTrace, &attributesJSON, &appVersion, &serverName, &recordedAt)
 
 	details := ExceptionDetails{
 		Hash: hash,
@@ -125,6 +127,8 @@ func getExceptionDetails(ctx context.Context, projectId uuid.UUID, hash string) 
 	details.AppVersion = appVersion
 	details.ServerName = serverName
 	details.RecordedAt = recordedAt
+	details.TraceType = traceType
+	details.TraceName = resolveTraceName(ctx, projectId, traceId, traceType, &details.RecordedAt)
 
 	if attributesJSON != "" && attributesJSON != "{}" {
 		attrs := make(map[string]string)

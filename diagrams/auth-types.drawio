@@ -1,0 +1,158 @@
+<mxfile host="app.diagrams.net" version="29.3.6">
+  <diagram name="Page-1" id="auth-types-1">
+    <mxGraphModel dx="815" dy="558" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1650" pageHeight="720" math="0" shadow="0" adaptiveColors="auto">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="sdk" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;App with Traceway SDK&lt;br&gt;or OTel exporter&lt;/b&gt;" vertex="1">
+          <mxGeometry height="60" width="170" x="40" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="ci" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Build / CI&lt;/b&gt;&lt;br&gt;&lt;i&gt;symbol upload&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="170" x="40" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="user" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Dashboard user&lt;/b&gt;&lt;br&gt;&lt;i&gt;browser&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="170" x="40" y="280" as="geometry" />
+        </mxCell>
+        <mxCell id="cli" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;traceway CLI&lt;/b&gt;" vertex="1">
+          <mxGeometry height="60" width="170" x="40" y="470" as="geometry" />
+        </mxCell>
+        <mxCell id="mcp" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;MCP client&lt;/b&gt;" vertex="1">
+          <mxGeometry height="60" width="170" x="40" y="600" as="geometry" />
+        </mxCell>
+        <mxCell id="ptok" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Project token&lt;/b&gt;&lt;br&gt;&lt;i&gt;non-expiring, per project&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="220" x="280" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="smtok" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Source map token&lt;/b&gt;&lt;br&gt;&lt;i&gt;non-expiring, per project&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="220" x="280" y="150" as="geometry" />
+        </mxCell>
+        <mxCell id="jwt" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Dashboard JWT&lt;/b&gt;&lt;br&gt;&lt;i&gt;7 days&lt;/i&gt;" vertex="1">
+          <mxGeometry height="55" width="220" x="280" y="260" as="geometry" />
+        </mxCell>
+        <mxCell id="pat" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Personal access token twp_&lt;/b&gt;&lt;br&gt;&lt;i&gt;SHA-256 hashed, optional expiry&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="220" x="280" y="340" as="geometry" />
+        </mxCell>
+        <mxCell id="devflow" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Device flow (RFC 8628)&lt;/b&gt;&lt;br&gt;&lt;i&gt;user approves the&lt;br&gt;user code at /device&lt;/i&gt;" vertex="1">
+          <mxGeometry height="80" width="220" x="280" y="460" as="geometry" />
+        </mxCell>
+        <mxCell id="oauth" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;OAuth code + PKCE&lt;/b&gt;&lt;br&gt;&lt;i&gt;RFC 7591 dynamic registration,&lt;br&gt;consent at /oauth/authorize,&lt;br&gt;single-use twa_ code (5 min)&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="220" x="280" y="580" as="geometry" />
+        </mxCell>
+        <mxCell id="tokend" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;POST /api/auth/token&lt;/b&gt;&lt;br&gt;&lt;i&gt;device_code, authorization_code,&lt;br&gt;refresh_token grants&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="200" x="560" y="520" as="geometry" />
+        </mxCell>
+        <mxCell id="acc" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Access token&lt;/b&gt;&lt;br&gt;&lt;i&gt;15-min JWT&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="200" x="820" y="450" as="geometry" />
+        </mxCell>
+        <mxCell id="ref" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Refresh token twr_&lt;/b&gt;&lt;br&gt;&lt;i&gt;90 days, rotating, family&lt;br&gt;revoked on reuse&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="200" x="820" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="uca" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;" value="&lt;b&gt;UseClientAuth&lt;/b&gt;" vertex="1">
+          <mxGeometry height="50" width="190" x="1090" y="45" as="geometry" />
+        </mxCell>
+        <mxCell id="usma" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;" value="&lt;b&gt;UseSourceMapAuth&lt;/b&gt;" vertex="1">
+          <mxGeometry height="50" width="190" x="1090" y="155" as="geometry" />
+        </mxCell>
+        <mxCell id="uaa" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;" value="&lt;b&gt;UseAppAuth&lt;/b&gt;&lt;br&gt;&lt;i&gt;JWT or twp_ hash lookup&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="190" x="1090" y="300" as="geometry" />
+        </mxCell>
+        <mxCell id="roles" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;" value="&lt;b&gt;Role middleware&lt;/b&gt;&lt;br&gt;&lt;i&gt;RequireProjectAccess&lt;br&gt;RequireWriteAccess (blocks readonly)&lt;br&gt;RequireAdminAccess (owner, admin)&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="190" x="1090" y="410" as="geometry" />
+        </mxCell>
+        <mxCell id="ingest" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Telemetry ingestion&lt;/b&gt;&lt;br&gt;&lt;i&gt;/api/report, /api/otel/v1/*,&lt;br&gt;/api/profiles/ingest&lt;/i&gt;" vertex="1">
+          <mxGeometry height="80" width="240" x="1340" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="symup" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Symbol uploads&lt;/b&gt;&lt;br&gt;&lt;i&gt;/api/sourcemaps/upload,&lt;br&gt;/api/symbols/upload&lt;/i&gt;" vertex="1">
+          <mxGeometry height="70" width="240" x="1340" y="145" as="geometry" />
+        </mxCell>
+        <mxCell id="app" parent="1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Dashboard API + MCP server&lt;/b&gt;&lt;br&gt;&lt;i&gt;scoped by organization role&lt;/i&gt;" vertex="1">
+          <mxGeometry height="90" width="240" x="1340" y="320" as="geometry" />
+        </mxCell>
+        <mxCell id="e1" edge="1" parent="1" source="sdk" target="ptok" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" edge="1" parent="1" source="ptok" target="uca" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" edge="1" parent="1" source="uca" target="ingest" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" edge="1" parent="1" source="ci" target="smtok" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" edge="1" parent="1" source="smtok" target="usma" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" edge="1" parent="1" source="usma" target="symup" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" edge="1" parent="1" source="user" target="jwt" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7l" connectable="0" parent="e7" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="login / SSO" vertex="1">
+          <mxGeometry relative="1" x="0" y="0" as="geometry">
+            <mxPoint x="0" y="-10" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e8" edge="1" parent="1" source="user" target="pat" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.7;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8l" connectable="0" parent="e8" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="account page" vertex="1">
+          <mxGeometry relative="1" x="0" y="0" as="geometry">
+            <mxPoint x="0" y="10" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e9" edge="1" parent="1" source="jwt" target="uaa" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.35;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" edge="1" parent="1" source="pat" target="uaa" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.65;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e11" edge="1" parent="1" source="cli" target="devflow" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e12" edge="1" parent="1" source="mcp" target="oauth" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e13" edge="1" parent="1" source="devflow" target="tokend" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.25;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e14" edge="1" parent="1" source="oauth" target="tokend" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" edge="1" parent="1" source="tokend" target="acc" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.3;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e16" edge="1" parent="1" source="tokend" target="ref" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.7;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e17" edge="1" parent="1" source="ref" target="tokend" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;dashed=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=1;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="920" y="660" />
+              <mxPoint x="660" y="660" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e17l" connectable="0" parent="e17" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="rotate" vertex="1">
+          <mxGeometry relative="1" x="0" y="0" as="geometry">
+            <mxPoint x="0" y="-10" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e18" edge="1" parent="1" source="acc" target="uaa" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.5;exitY=0;exitDx=0;exitDy=0;entryX=0.25;entryY=1;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="920" y="385" />
+              <mxPoint x="1137" y="385" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e19" edge="1" parent="1" source="uaa" target="roles" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=0.6;exitY=1;exitDx=0;exitDy=0;entryX=0.6;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e20" edge="1" parent="1" source="roles" target="app" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.75;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

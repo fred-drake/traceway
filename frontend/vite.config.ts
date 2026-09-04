@@ -34,11 +34,13 @@ function injectBillingSource(): Plugin {
 		name: 'inject-billing-source',
 		enforce: 'pre',
 		transform(code, id) {
-			if (id.endsWith('.css') && code.includes('@source "$BILLING_PATH"')) {
+			// Quote-agnostic: prettier (singleQuote) rewrites the placeholder's quotes in CSS
+			const placeholder = /@source\s+(['"])\$BILLING_PATH\1;?/;
+			if (id.endsWith('.css') && placeholder.test(code)) {
 				if (billingExists) {
-					return code.replace('@source "$BILLING_PATH"', `@source "${resolvedBillingPath}"`);
+					return code.replace(placeholder, `@source "${resolvedBillingPath}";`);
 				} else {
-					return code.replace('@source "$BILLING_PATH";', '');
+					return code.replace(placeholder, '');
 				}
 			}
 		}
@@ -61,15 +63,23 @@ export default defineConfig(({ mode }) => {
 			sourcemap: 'hidden'
 		},
 		resolve: {
-			dedupe: ['d3-scale', 'd3-array', 'lucide-svelte', 'svelte']
+			dedupe: ['d3-scale', 'd3-array', '@lucide/svelte', 'svelte', 'svelte-sonner']
 		},
 		optimizeDeps: {
-			include: ['d3-scale', 'd3-array', 'lucide-svelte']
+			// @milkdown/crepe is dynamically imported; pre-bundle it so the first
+			// editor open doesn't trigger a mid-session re-optimization page reload
+			// that strands the editor on its loading state.
+			include: ['d3-scale', 'd3-array', '@lucide/svelte', 'svelte-sonner', '@milkdown/crepe'],
+			// The source-map setup page shows an `import ... from
+			// "@tracewayapp/bundler-plugin/vite"` snippet as text. Vite's dependency
+			// scanner regex-matches it as a real import and fails the whole
+			// pre-bundling scan because the package is not a dependency here.
+			exclude: ['@tracewayapp/bundler-plugin']
 		},
 		server: {
 			proxy: {
 				'/api': {
-					target: 'http://localhost:8082',
+					target: env.TRACEWAY_API_PROXY || 'http://localhost:8082',
 					changeOrigin: true
 					// rewrite: (path) => path.replace(/^\/api/, '')
 				}

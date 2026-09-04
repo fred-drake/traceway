@@ -1,8 +1,8 @@
 package clientmodels
 
 import (
-	"github.com/tracewayapp/traceway/backend/app/models"
 	"encoding/json"
+	"github.com/tracewayapp/traceway/backend/app/models"
 	"time"
 
 	"github.com/google/uuid"
@@ -18,6 +18,7 @@ type ClientExceptionStackTrace struct {
 	SessionRecordingId *string           `json:"sessionRecordingId"`
 	SessionId          *string           `json:"sessionId"`
 	DistributedTraceId *string           `json:"distributedTraceId"`
+	DebugIds           map[string]string `json:"debugIds"`
 }
 
 func (c *ClientExceptionStackTrace) ToExceptionStackTrace(exceptionHash, appVersion, serverName string) models.ExceptionStackTrace {
@@ -133,6 +134,7 @@ func (c *ClientTrace) ToEndpoint(appVersion, serverName string) models.Endpoint 
 		ServerName:         serverName,
 		DistributedTraceId: c.parsedDistributedTraceId(),
 		IsStream:           c.Attributes[streamAttributeKey] == "true",
+		IsRoot:             true,
 	}
 }
 
@@ -147,6 +149,7 @@ func (c *ClientTrace) ToTask(appVersion, serverName string) models.Task {
 		AppVersion:         appVersion,
 		ServerName:         serverName,
 		DistributedTraceId: c.parsedDistributedTraceId(),
+		IsRoot:             true,
 	}
 }
 
@@ -167,12 +170,12 @@ func (c *ClientSpan) ParsedId() uuid.UUID {
 
 func (c *ClientSpan) ToSpan(traceId uuid.UUID) models.Span {
 	return models.Span{
-		Id:      c.ParsedId(),
-		TraceId: traceId,
-		Name:          c.Name,
-		StartTime:     c.StartTime,
-		Duration:      c.Duration,
-		RecordedAt:    time.Now(),
+		Id:         c.ParsedId(),
+		TraceId:    traceId,
+		Name:       c.Name,
+		StartTime:  c.StartTime,
+		Duration:   c.Duration,
+		RecordedAt: time.Now(),
 	}
 }
 
@@ -181,10 +184,12 @@ type ClientSessionRecording struct {
 	SessionId    string          `json:"sessionId,omitempty"`
 	SegmentIndex int32           `json:"segmentIndex,omitempty"`
 	Events       json.RawMessage `json:"events"`
-	// Logs and Actions are opaque to the backend — they ride into S3 alongside
-	// Events without ever being inspected. App console logs from session
-	// recordings are intentionally NOT inserted into the OTel logs ClickHouse
-	// table; they live exclusively inside the S3 recording file.
+	// Logs and Actions ride into S3 alongside Events. Actions are opaque to the
+	// backend; Logs are inspected only to source-map symbolicate the stack
+	// trace inside console.error lines (see symbolicateRecordingErrorLogs) for
+	// JS projects, then stored. App console logs from session recordings are
+	// intentionally NOT inserted into the OTel logs ClickHouse table; they live
+	// exclusively inside the S3 recording file.
 	Logs      json.RawMessage `json:"logs,omitempty"`
 	Actions   json.RawMessage `json:"actions,omitempty"`
 	StartedAt *time.Time      `json:"startedAt,omitempty"`

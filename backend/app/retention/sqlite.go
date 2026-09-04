@@ -22,28 +22,36 @@ var telemetryRetentionTargets = []struct {
 	{"metric_points", "recorded_at"},
 	{"session_recordings", "recorded_at"},
 	{"fired_notifications", "fired_at"},
+	{"check_results", "recorded_at"},
 	{"ai_traces", "recorded_at"},
 	{"log_records", "timestamp"},
 	{"sessions", "started_at"},
+	{"profiling_samples", "start_time"},
+	{"profiles", "recorded_at"},
+	{"profiling_stacks", "last_seen"},
 }
 
-var mainRetentionTargets = []struct {
-	table  string
-	column string
-}{
-	{"notification_history", "created_at"},
+// TelemetryTimeColumns maps each pruned telemetry table to its retention time
+// column, which is also the column the migrations package's index guard
+// expects project-leading indexes to reach.
+func TelemetryTimeColumns() map[string]string {
+	columns := make(map[string]string, len(telemetryRetentionTargets))
+	for _, tgt := range telemetryRetentionTargets {
+		columns[tgt.table] = tgt.column
+	}
+	return columns
 }
 
-func startSQLiteRetention(ctx context.Context, days int) {
+func startSQLiteRetention(ctx context.Context, days int, source string) {
 	if !db.IsSQLite() {
 		return
 	}
 	if days == 0 {
-		config.Logln("SQLite retention disabled (SQLITE_RETENTION_DAYS=0)")
+		config.Logf("Telemetry retention disabled (%s=0)", source)
 		return
 	}
 
-	config.Logf("Starting SQLite retention worker (TTL: %d days, interval: %s)", days, tickInterval)
+	config.Logf("Starting telemetry retention worker (TTL: %d days, interval: %s, via %s)", days, tickInterval, source)
 
 	go func() {
 		defer traceway.Recover()
@@ -77,17 +85,27 @@ func runSQLiteRetention(ctx context.Context, days int) {
 				traceway.CaptureException(fmt.Errorf("retention: delete from telemetry.%s failed: %w", tgt.table, err))
 			}
 		}
+		reclaimTelemetryDisk(ctx)
 	}
+}
 
-	if db.DB != nil {
-		for _, tgt := range mainRetentionTargets {
-			if ctx.Err() != nil {
-				return
-			}
-			query := fmt.Sprintf("DELETE FROM %s WHERE %s < :cutoff", tgt.table, tgt.column)
-			if err := lit.DeleteNamed(db.Driver, db.DB, query, params); err != nil {
-				traceway.CaptureException(fmt.Errorf("retention: delete from main.%s failed: %w", tgt.table, err))
-			}
+func reclaimTelemetryDisk(ctx context.Context) {
+	if db.IsDuckDBTelemetry() {
+		if _, err := db.TelemetryDB.ExecContext(ctx, "CHECKPOINT"); err != nil {
+			traceway.CaptureException(fmt.Errorf("retention: telemetry maintenance %q failed: %w", "CHECKPOINT", err))
+		}
+		return
+	}
+	for _, stmt := range []string{
+		"PRAGMA incremental_vacuum",
+		"PRAGMA optimize",
+		"PRAGMA wal_checkpoint(TRUNCATE)",
+	} {
+		if ctx.Err() != nil {
+			return
+		}
+		if _, err := db.TelemetryDB.ExecContext(ctx, stmt); err != nil {
+			traceway.CaptureException(fmt.Errorf("retention: telemetry maintenance %q failed: %w", stmt, err))
 		}
 	}
 }

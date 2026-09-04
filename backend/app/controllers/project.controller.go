@@ -1,15 +1,20 @@
 package controllers
 
 import (
+	"database/sql"
+	"errors"
+	"fmt"
 	"github.com/tracewayapp/traceway/backend/app/cache"
+	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/db"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
-	"database/sql"
-	"fmt"
+	"github.com/tracewayapp/traceway/backend/app/outbox"
+	"github.com/tracewayapp/traceway/backend/app/profiling"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
+	"github.com/tracewayapp/traceway/backend/app/services/contentflag"
 	"net/http"
 	"regexp"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
@@ -26,39 +31,102 @@ var validFrameworks = map[string]bool{
 	"stdlib":   true,
 	"custom":   true,
 	// JavaScript frameworks
-	"react":   true,
-	"svelte":  true,
-	"vuejs":   true,
-	"nextjs":  true,
-	"nestjs":  true,
-	"express": true,
-	"remix":          true,
-	"jquery":         true,
-	"react-native":   true,
-	"hono":           true,
-	"cloudflare":     true,
-	"opentelemetry":  true,
+	"react":         true,
+	"svelte":        true,
+	"vuejs":         true,
+	"nextjs":        true,
+	"nestjs":        true,
+	"express":       true,
+	"remix":         true,
+	"jquery":        true,
+	"react-native":  true,
+	"hono":          true,
+	"cloudflare":    true,
+	"opentelemetry": true,
 	// PHP frameworks
-	"symfony":        true,
-	"laravel":        true,
+	"symfony": true,
+	"laravel": true,
+	// Python frameworks
+	"django": true,
 	// Mobile frameworks
-	"flutter":        true,
-	"android":        true,
+	"flutter": true,
+	"android": true,
+	"ios":     true,
 }
 
 // Project name validation regex: allows alphanumeric, spaces, hyphens, and underscores
 var projectNameRegex = regexp.MustCompile(`^[a-zA-Z0-9\s\-_]+$`)
 
+// Profile label key validation regex: letters, numbers, and . _ : -
+var profileLabelKeyRegex = regexp.MustCompile(`^[a-zA-Z0-9._:-]+$`)
+
+func cleanAiFlaggedTerms(in []string) ([]string, string) {
+	if len(in) > 200 {
+		return nil, "At most 200 flagged terms are allowed"
+	}
+	cleaned := make([]string, 0, len(in))
+	seen := make(map[string]struct{})
+	for _, term := range in {
+		term = strings.ToLower(strings.TrimSpace(term))
+		if term == "" {
+			continue
+		}
+		if utf8.RuneCountInString(term) > 100 {
+			return nil, "Flagged terms must be at most 100 characters"
+		}
+		if _, dup := seen[term]; dup {
+			continue
+		}
+		seen[term] = struct{}{}
+		cleaned = append(cleaned, term)
+	}
+	return cleaned, ""
+}
+
+func cleanProfileLabelAllowlist(in []string) ([]string, string) {
+	if len(in) > 20 {
+		return nil, "At most 20 profile label keys are allowed"
+	}
+	cleaned := make([]string, 0, len(in))
+	seen := make(map[string]struct{})
+	for _, key := range in {
+		key = strings.TrimSpace(key)
+		if key == "" || strings.EqualFold(key, profiling.LabelEndpoint) {
+			continue
+		}
+		if utf8.RuneCountInString(key) > 100 {
+			return nil, "Profile label keys must be at most 100 characters"
+		}
+		if !profileLabelKeyRegex.MatchString(key) {
+			return nil, "Profile label keys may only contain letters, numbers, and . _ : -"
+		}
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		cleaned = append(cleaned, key)
+	}
+	return cleaned, ""
+}
+
 type projectController struct{}
 
 type CreateProjectRequest struct {
-	Name      string `json:"name" binding:"required"`
-	Framework string `json:"framework" binding:"required"`
+	Name           string `json:"name"`
+	Framework      string `json:"framework" binding:"required"`
+	OrganizationId *int   `json:"organizationId"`
 }
 
+var errNoOrgCreateAccess = errors.New("no create access in target organization")
+
 type UpdateProjectRequest struct {
-	Name      string `json:"name" binding:"required"`
-	Framework string `json:"framework" binding:"required"`
+	Name                    string    `json:"name" binding:"required"`
+	Framework               string    `json:"framework" binding:"required"`
+	DropHealthyHealthchecks *bool     `json:"dropHealthyHealthchecks"`
+	HealthcheckPaths        *[]string `json:"healthcheckPaths"`
+	ProfileLabelAllowlist   *[]string `json:"profileLabelAllowlist"`
+	AiFlaggedTerms          *[]string `json:"aiFlaggedTerms"`
+	AiFlaggedLanguages      *[]string `json:"aiFlaggedLanguages"`
 }
 
 type DeleteProjectRequest struct {
@@ -69,7 +137,7 @@ func (p projectController) ListProjects(c *gin.Context) {
 	userId := middleware.GetUserId(c)
 
 	projectsWithBackendUrl, err := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.ProjectWithBackendUrl, error) {
-		return repositories.ProjectRepository.FindAllWithBackendUrlByUserId(tx, userId)
+		return transactional.ProjectRepository.FindAllWithBackendUrlByUserId(tx, userId)
 	})
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("error fetching projects: %w", err))
@@ -83,24 +151,18 @@ func (p projectController) ListProjects(c *gin.Context) {
 func (p projectController) CreateProject(c *gin.Context) {
 	var request CreateProjectRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
-	// Validate project name
-	nameLen := utf8.RuneCountInString(request.Name)
-	if nameLen < 1 || nameLen > 100 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Project name must be between 1 and 100 characters"})
-		return
-	}
-	if !projectNameRegex.MatchString(request.Name) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Project name can only contain letters, numbers, spaces, hyphens, and underscores"})
+	if msg := validateProjectName(request.Name); msg != "" {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": msg})
 		return
 	}
 
 	if !validFrameworks[request.Framework] {
 		traceway.CaptureMessage("Invalid framework received: " + request.Framework)
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Framework must be one of: gin, fiber, chi, fasthttp, stdlib, custom, react, svelte, vuejs, jquery, react-native, hono, cloudflare, opentelemetry, symfony, laravel, flutter, android"})
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": invalidFrameworkMessage})
 		return
 	}
 
@@ -110,30 +172,64 @@ func (p projectController) CreateProject(c *gin.Context) {
 		return
 	}
 
+	userId := middleware.GetUserId(c)
+
+	var creatorRole string
 	project, err := db.ExecuteTransaction(func(tx *sql.Tx) (*models.Project, error) {
-		currentProject, err := repositories.ProjectRepository.FindById(tx, projectId)
+		currentProject, err := transactional.ProjectRepository.FindById(tx, projectId)
 		if err != nil {
 			return nil, err
 		}
 		if currentProject == nil || currentProject.OrganizationId == nil {
 			return nil, fmt.Errorf("current project has no organization")
 		}
-		return repositories.ProjectRepository.CreateWithOrganization(tx, request.Name, request.Framework, *currentProject.OrganizationId)
+
+		targetOrgId := *currentProject.OrganizationId
+		if request.OrganizationId != nil {
+			targetOrgId = *request.OrganizationId
+		}
+
+		role, err := transactional.OrganizationRepository.GetUserRole(tx, targetOrgId, userId)
+		if err != nil {
+			return nil, err
+		}
+		if role == "" || role == "readonly" {
+			return nil, errNoOrgCreateAccess
+		}
+		creatorRole = role
+
+		if ProjectLimitHook != nil {
+			if err := ProjectLimitHook(tx, targetOrgId); err != nil {
+				return nil, err
+			}
+		}
+		return transactional.ProjectRepository.CreateWithOrganization(tx, request.Name, request.Framework, targetOrgId)
 	})
 	if err != nil {
+		if errors.Is(err, errNoOrgCreateAccess) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "You don't have permission to create projects in this organization"})
+			return
+		}
+		var limitErr *LimitExceededError
+		if errors.As(err, &limitErr) {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": limitErr.Message})
+			return
+		}
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error creating a project: %w", err))
 		return
 	}
 
 	cache.ProjectCache.AddProject(project)
 
-	c.JSON(http.StatusCreated, project.ToProjectWithBackendUrl())
+	projectWithUrl := project.ToProjectWithBackendUrl()
+	projectWithUrl.Role = creatorRole
+	c.JSON(http.StatusCreated, projectWithUrl)
 }
 
 func (p projectController) UpdateProject(c *gin.Context) {
 	var request UpdateProjectRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -147,8 +243,84 @@ func (p projectController) UpdateProject(c *gin.Context) {
 		return
 	}
 	if !validFrameworks[request.Framework] {
-		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Framework must be one of: gin, fiber, chi, fasthttp, stdlib, custom, react, svelte, vuejs, jquery, react-native, hono, cloudflare, opentelemetry, symfony, laravel, flutter, android"})
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Framework must be one of: gin, fiber, chi, fasthttp, stdlib, custom, react, svelte, vuejs, jquery, react-native, hono, cloudflare, opentelemetry, symfony, laravel, django, flutter, android, ios"})
 		return
+	}
+
+	var healthcheckPaths *[]string
+	if request.HealthcheckPaths != nil {
+		if len(*request.HealthcheckPaths) > 50 {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "At most 50 healthcheck paths are allowed"})
+			return
+		}
+		cleaned := make([]string, 0, len(*request.HealthcheckPaths))
+		for _, path := range *request.HealthcheckPaths {
+			path = strings.TrimSpace(path)
+			if path == "" {
+				continue
+			}
+			if utf8.RuneCountInString(path) > 200 {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Healthcheck paths must be at most 200 characters"})
+				return
+			}
+			base := strings.TrimSuffix(strings.TrimPrefix(path, "*"), "*")
+			if !strings.HasPrefix(base, "/") {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Healthcheck paths must start with / (a leading or trailing * is allowed as a wildcard)"})
+				return
+			}
+			if strings.Contains(base, "*") {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Wildcards are only allowed as a single leading or trailing *"})
+				return
+			}
+			if base == "/" && base != path {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Wildcard healthcheck paths need at least one character besides /"})
+				return
+			}
+			cleaned = append(cleaned, path)
+		}
+		healthcheckPaths = &cleaned
+	}
+
+	var profileLabelAllowlist *[]string
+	if request.ProfileLabelAllowlist != nil {
+		cleaned, errMsg := cleanProfileLabelAllowlist(*request.ProfileLabelAllowlist)
+		if errMsg != "" {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": errMsg})
+			return
+		}
+		profileLabelAllowlist = &cleaned
+	}
+
+	var aiFlaggedTerms *[]string
+	if request.AiFlaggedTerms != nil {
+		cleaned, errMsg := cleanAiFlaggedTerms(*request.AiFlaggedTerms)
+		if errMsg != "" {
+			c.JSON(http.StatusUnprocessableEntity, gin.H{"error": errMsg})
+			return
+		}
+		aiFlaggedTerms = &cleaned
+	}
+
+	var aiFlaggedLanguages *[]string
+	if request.AiFlaggedLanguages != nil {
+		cleaned := make([]string, 0, len(*request.AiFlaggedLanguages))
+		seen := make(map[string]struct{})
+		for _, lang := range *request.AiFlaggedLanguages {
+			lang = strings.ToLower(strings.TrimSpace(lang))
+			if lang == "" {
+				continue
+			}
+			if !contentflag.IsValidLanguage(lang) {
+				c.JSON(http.StatusUnprocessableEntity, gin.H{"error": "Unknown flagged-term language pack: " + lang})
+				return
+			}
+			if _, dup := seen[lang]; dup {
+				continue
+			}
+			seen[lang] = struct{}{}
+			cleaned = append(cleaned, lang)
+		}
+		aiFlaggedLanguages = &cleaned
 	}
 
 	projectId, err := middleware.GetProjectId(c)
@@ -158,7 +330,7 @@ func (p projectController) UpdateProject(c *gin.Context) {
 	}
 
 	project, err := db.ExecuteTransaction(func(tx *sql.Tx) (*models.Project, error) {
-		return repositories.ProjectRepository.Update(tx, projectId, request.Name, request.Framework)
+		return transactional.ProjectRepository.Update(tx, projectId, request.Name, request.Framework, request.DropHealthyHealthchecks, healthcheckPaths, profileLabelAllowlist, aiFlaggedTerms, aiFlaggedLanguages)
 	})
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("error updating project: %w", err))
@@ -173,7 +345,7 @@ func (p projectController) UpdateProject(c *gin.Context) {
 func (p projectController) DeleteProject(c *gin.Context) {
 	var request DeleteProjectRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -184,7 +356,7 @@ func (p projectController) DeleteProject(c *gin.Context) {
 	}
 
 	nameMatched, err := db.ExecuteTransaction(func(tx *sql.Tx) (bool, error) {
-		project, err := repositories.ProjectRepository.FindById(tx, projectId)
+		project, err := transactional.ProjectRepository.FindById(tx, projectId)
 		if err != nil {
 			return false, err
 		}
@@ -194,7 +366,10 @@ func (p projectController) DeleteProject(c *gin.Context) {
 		if project.Name != request.Name {
 			return false, nil
 		}
-		if err := repositories.ProjectRepository.Delete(tx, projectId); err != nil {
+		if err := outbox.CancelForProject(tx, projectId); err != nil {
+			return false, err
+		}
+		if err := transactional.ProjectRepository.Delete(tx, projectId); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -221,7 +396,7 @@ func (p projectController) GenerateSourceMapToken(c *gin.Context) {
 	}
 
 	token, err := db.ExecuteTransaction(func(tx *sql.Tx) (string, error) {
-		return repositories.ProjectRepository.GenerateSourceMapToken(tx, projectId)
+		return transactional.ProjectRepository.GenerateSourceMapToken(tx, projectId)
 	})
 	if err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to generate source map token: %w", err))

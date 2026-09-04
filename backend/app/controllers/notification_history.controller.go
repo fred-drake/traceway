@@ -1,15 +1,13 @@
 package controllers
 
 import (
-	"database/sql"
 	"net/http"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
 	traceway "go.tracewayapp.com"
 )
 
@@ -31,7 +29,7 @@ func (ctrl *notificationHistoryController) List(ctx *gin.Context) {
 
 	var request NotificationHistorySearchRequest
 	if err := ctx.ShouldBindJSON(&request); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -56,36 +54,27 @@ func (ctrl *notificationHistoryController) List(ctx *gin.Context) {
 		toTime = &t
 	}
 
-	type historyResult struct {
-		Items []*models.NotificationHistory
-		Total int64
-	}
-
-	result, err := db.ExecuteTransaction(func(tx *sql.Tx) (historyResult, error) {
-		items, total, err := repositories.NotificationHistoryRepository.FindByProject(tx, projectId, page, pageSize, request.Search, fromTime, toTime)
-		return historyResult{Items: items, Total: total}, err
-	})
+	items, total, err := telemetry.FiredNotificationRepository.FindByProject(ctx.Request.Context(), projectId, page, pageSize, request.Search, fromTime, toTime)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to list notification history: %w", err))
 		return
 	}
 
-	totalPages := result.Total / int64(pageSize)
-	if result.Total%int64(pageSize) != 0 {
+	totalPages := total / int64(pageSize)
+	if total%int64(pageSize) != 0 {
 		totalPages++
 	}
 
-	data := result.Items
-	if data == nil {
-		data = []*models.NotificationHistory{}
+	if items == nil {
+		items = []*models.NotificationHistoryEntry{}
 	}
 
-	ctx.JSON(http.StatusOK, PaginatedResponse[*models.NotificationHistory]{
-		Data: data,
+	ctx.JSON(http.StatusOK, PaginatedResponse[*models.NotificationHistoryEntry]{
+		Data: items,
 		Pagination: Pagination{
 			Page:       page,
 			PageSize:   pageSize,
-			Total:      result.Total,
+			Total:      total,
 			TotalPages: totalPages,
 		},
 	})

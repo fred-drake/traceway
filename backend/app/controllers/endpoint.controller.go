@@ -1,14 +1,16 @@
 package controllers
 
 import (
-	"github.com/tracewayapp/traceway/backend/app/middleware"
-	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
 	"database/sql"
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
+
+	"github.com/tracewayapp/traceway/backend/app/middleware"
+	"github.com/tracewayapp/traceway/backend/app/models"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
 
 	"github.com/gin-gonic/gin"
 	traceway "go.tracewayapp.com"
@@ -24,6 +26,7 @@ type EndpointSearchRequest struct {
 	Pagination    PaginationParams `json:"pagination"`
 	Search        string           `json:"search"`
 	RootFilter    string           `json:"rootFilter"`
+	MethodFilter  string           `json:"methodFilter"`
 }
 
 type EndpointInstancesRequest struct {
@@ -45,7 +48,25 @@ type EndpointStackedChartRequest struct {
 	ToDate          time.Time `json:"toDate"`
 	MetricType      string    `json:"metricType"`      // total_time, p50, p95, p99
 	IntervalMinutes int       `json:"intervalMinutes"` // bucket size
+	Search          string    `json:"search"`
+	RootFilter      string    `json:"rootFilter"`
+	MethodFilter    string    `json:"methodFilter"`
 }
+
+var validEndpointMethods = map[string]bool{
+	"GET": true, "HEAD": true, "POST": true, "PUT": true, "DELETE": true,
+	"CONNECT": true, "OPTIONS": true, "TRACE": true, "PATCH": true,
+}
+
+func normalizeMethodFilter(method string) (string, bool) {
+	if method == "" {
+		return "", true
+	}
+	method = strings.ToUpper(method)
+	return method, validEndpointMethods[method]
+}
+
+const invalidMethodFilterMessage = "methodFilter must be an HTTP method such as GET or POST"
 
 func (e endpointController) FindAllEndpoints(c *gin.Context) {
 	projectId, err := middleware.GetProjectId(c)
@@ -56,12 +77,12 @@ func (e endpointController) FindAllEndpoints(c *gin.Context) {
 
 	var request EndpointSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
 	span := traceway.StartSpan(c, "loading endpoints")
-	endpoints, total, err := repositories.EndpointRepository.FindAll(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy)
+	endpoints, total, err := telemetry.EndpointRepository.FindAll(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading endpoints: %w", err))
@@ -88,12 +109,18 @@ func (e endpointController) FindGroupedByEndpoint(c *gin.Context) {
 
 	var request EndpointSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
+		return
+	}
+
+	methodFilter, ok := normalizeMethodFilter(request.MethodFilter)
+	if !ok {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": invalidMethodFilterMessage})
 		return
 	}
 
 	span := traceway.StartSpan(c, "loading grouped endpoints")
-	stats, total, err := repositories.EndpointRepository.FindGroupedByEndpoint(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection, request.Search, request.RootFilter)
+	stats, total, err := telemetry.EndpointRepository.FindGroupedByEndpoint(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection, request.Search, request.RootFilter, methodFilter)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading stats: %w", err))
@@ -132,12 +159,12 @@ func (e endpointController) FindByEndpoint(c *gin.Context) {
 
 	var request EndpointInstancesRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
 	span := traceway.StartSpan(c, "loading endpoint instances")
-	endpoints, total, err := repositories.EndpointRepository.FindByEndpoint(c, projectId, endpoint, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection)
+	endpoints, total, err := telemetry.EndpointRepository.FindByEndpoint(c, projectId, endpoint, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.SortDirection)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading endpoints: %w", err))
@@ -146,7 +173,7 @@ func (e endpointController) FindByEndpoint(c *gin.Context) {
 
 	// Get aggregate stats for this endpoint
 	span = traceway.StartSpan(c, "loading endpoint stats")
-	stats, err := repositories.EndpointRepository.GetEndpointStats(c, projectId, endpoint, request.FromDate, request.ToDate)
+	stats, err := telemetry.EndpointRepository.GetEndpointStats(c, projectId, endpoint, request.FromDate, request.ToDate)
 	span.End()
 	if err != nil {
 		// Don't fail the request if stats fail, just return nil stats
@@ -173,7 +200,7 @@ func (e endpointController) GetStackedChart(c *gin.Context) {
 
 	var request EndpointStackedChartRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -188,8 +215,14 @@ func (e endpointController) GetStackedChart(c *gin.Context) {
 		request.MetricType = "total_time" // default
 	}
 
+	methodFilter, ok := normalizeMethodFilter(request.MethodFilter)
+	if !ok {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": invalidMethodFilterMessage})
+		return
+	}
+
 	span := traceway.StartSpan(c, "loading stacked chart")
-	data, err := repositories.EndpointRepository.GetEndpointStackedChart(c, projectId, request.FromDate, request.ToDate, request.IntervalMinutes, request.MetricType)
+	data, err := telemetry.EndpointRepository.GetEndpointStackedChart(c, projectId, request.FromDate, request.ToDate, request.IntervalMinutes, request.MetricType, request.Search, request.RootFilter, methodFilter)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading stacked chart data: %w", err))
@@ -217,7 +250,7 @@ func (e endpointController) GetSlowEndpoint(c *gin.Context) {
 		endpoint = rawEndpoint
 	}
 
-	offsetMs, reason, err := repositories.EndpointRepository.GetSlowEndpoint(c, projectId, endpoint)
+	offsetMs, reason, err := telemetry.EndpointRepository.GetSlowEndpoint(c, projectId, endpoint)
 	if errors.Is(err, sql.ErrNoRows) {
 		c.JSON(http.StatusOK, gin.H{"offsetMs": 0, "reason": ""})
 		return
@@ -245,11 +278,11 @@ func (e endpointController) SetSlowEndpoint(c *gin.Context) {
 
 	var request SetSlowEndpointRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
-	if err := repositories.EndpointRepository.UpsertSlowEndpoint(c, projectId, request.Endpoint, request.OffsetMs, request.Reason); err != nil {
+	if err := telemetry.EndpointRepository.UpsertSlowEndpoint(c, projectId, request.Endpoint, request.OffsetMs, request.Reason); err != nil {
 		c.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("error saving slow endpoint: %w", err))
 		return
 	}

@@ -2,7 +2,7 @@ package otelcontrollers
 
 import (
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 
 	"github.com/google/uuid"
 	colmetricspb "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
@@ -12,31 +12,50 @@ import (
 
 type convertedMetrics struct {
 	Points  []models.MetricPoint
-	Entries []repositories.MetricRegistrationEntry
+	Entries []transactional.MetricRegistrationEntry
 }
 
-// processResourceAttrAllowlist names the OTel Resource attributes we lift
+// metricResourceAttrAllowlist names the OTel Resource attributes we lift
 // onto each metric point's tags. Necessary because the hostmetrics process
 // scraper distinguishes per-process metrics via Resource attributes (one
 // ResourceMetrics per process), not data-point attributes — without this,
-// every process.* point looks identical save for the value. The list is an
-// allowlist rather than a passthrough so other receivers can't blow up
+// every process.* point looks identical save for the value. The same applies
+// to the docker_stats, kubeletstats and postgresql receivers, whose
+// container/pod/node/database identity also lives on the Resource. The list
+// is an allowlist rather than a passthrough so other receivers can't blow up
 // metric_points cardinality with arbitrary resource attrs.
-var processResourceAttrAllowlist = []string{
+var metricResourceAttrAllowlist = []string{
+	"host.name",
+	"host.id",
+	"host.arch",
+	"os.type",
+	"os.description",
+	"cloud.provider",
+	"cloud.region",
+	"cloud.availability_zone",
 	"process.pid",
 	"process.executable.name",
 	"process.command_line",
 	"process.owner",
+	"container.name",
+	"container.image.name",
+	"k8s.pod.name",
+	"k8s.namespace.name",
+	"k8s.node.name",
+	"k8s.deployment.name",
+	"k8s.container.name",
+	"k8s.cluster.name",
+	"postgresql.database.name",
 }
 
 func convertMetricPoints(projectId uuid.UUID, req *colmetricspb.ExportMetricsServiceRequest) convertedMetrics {
 	var points []models.MetricPoint
-	seenEntries := make(map[string]repositories.MetricRegistrationEntry)
+	seenEntries := make(map[string]transactional.MetricRegistrationEntry)
 
 	for _, rm := range req.ResourceMetrics {
 		resAttrs := rm.GetResource().GetAttributes()
 		sn := getStringAttribute(resAttrs, "service.name")
-		resTags := extractProcessResourceTags(resAttrs)
+		resTags := extractMetricResourceTags(resAttrs)
 
 		for _, sm := range rm.ScopeMetrics {
 			for _, metric := range sm.Metrics {
@@ -47,7 +66,7 @@ func convertMetricPoints(projectId uuid.UUID, req *colmetricspb.ExportMetricsSer
 				case *metricspb.Metric_Gauge:
 					points = appendNumberDataPoints(points, projectId, name, sn, resTags, data.Gauge.GetDataPoints())
 					if _, ok := seenEntries[name]; !ok {
-						seenEntries[name] = repositories.MetricRegistrationEntry{
+						seenEntries[name] = transactional.MetricRegistrationEntry{
 							Name:       name,
 							Unit:       unit,
 							MetricType: "gauge",
@@ -60,7 +79,7 @@ func convertMetricPoints(projectId uuid.UUID, req *colmetricspb.ExportMetricsSer
 						if data.Sum.IsMonotonic {
 							mt = "counter"
 						}
-						seenEntries[name] = repositories.MetricRegistrationEntry{
+						seenEntries[name] = transactional.MetricRegistrationEntry{
 							Name:       name,
 							Unit:       unit,
 							MetricType: mt,
@@ -90,14 +109,14 @@ func convertMetricPoints(projectId uuid.UUID, req *colmetricspb.ExportMetricsSer
 					avgName := name + ".avg"
 					countName := name + ".count"
 					if _, ok := seenEntries[avgName]; !ok {
-						seenEntries[avgName] = repositories.MetricRegistrationEntry{
+						seenEntries[avgName] = transactional.MetricRegistrationEntry{
 							Name:       avgName,
 							Unit:       unit,
 							MetricType: "gauge",
 						}
 					}
 					if _, ok := seenEntries[countName]; !ok {
-						seenEntries[countName] = repositories.MetricRegistrationEntry{
+						seenEntries[countName] = transactional.MetricRegistrationEntry{
 							Name:       countName,
 							Unit:       "count",
 							MetricType: "counter",
@@ -108,7 +127,7 @@ func convertMetricPoints(projectId uuid.UUID, req *colmetricspb.ExportMetricsSer
 		}
 	}
 
-	entries := make([]repositories.MetricRegistrationEntry, 0, len(seenEntries))
+	entries := make([]transactional.MetricRegistrationEntry, 0, len(seenEntries))
 	for _, e := range seenEntries {
 		entries = append(entries, e)
 	}
@@ -153,7 +172,7 @@ func buildTags(serverName string, resTags map[string]string, attrs []*commonpb.K
 	return tags
 }
 
-func extractProcessResourceTags(resAttrs []*commonpb.KeyValue) map[string]string {
+func extractMetricResourceTags(resAttrs []*commonpb.KeyValue) map[string]string {
 	if len(resAttrs) == 0 {
 		return nil
 	}
@@ -161,8 +180,8 @@ func extractProcessResourceTags(resAttrs []*commonpb.KeyValue) map[string]string
 	if len(all) == 0 {
 		return nil
 	}
-	out := make(map[string]string, len(processResourceAttrAllowlist))
-	for _, k := range processResourceAttrAllowlist {
+	out := make(map[string]string, len(metricResourceAttrAllowlist))
+	for _, k := range metricResourceAttrAllowlist {
 		if v, ok := all[k]; ok && v != "" {
 			out[k] = v
 		}

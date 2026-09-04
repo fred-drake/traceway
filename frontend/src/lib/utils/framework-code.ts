@@ -38,6 +38,8 @@ export function getInstallCommand(framework: Framework): string {
 			return 'composer require traceway/opentelemetry-symfony open-telemetry/exporter-otlp php-http/guzzle7-adapter';
 		case 'laravel':
 			return 'composer require keepsuit/laravel-opentelemetry open-telemetry/exporter-otlp php-http/guzzle7-adapter';
+		case 'django':
+			return 'pip install opentelemetry-distro opentelemetry-exporter-otlp opentelemetry-instrumentation-django && opentelemetry-bootstrap -a install';
 		case 'cloudflare':
 			return '';
 		case 'opentelemetry':
@@ -45,7 +47,9 @@ export function getInstallCommand(framework: Framework): string {
 		case 'flutter':
 			return 'flutter pub add traceway';
 		case 'android':
-			return 'implementation("com.tracewayapp:traceway:1.0.0")';
+			return 'implementation("com.tracewayapp:traceway:1.0.1")';
+		case 'ios':
+			return '.package(url: "https://github.com/tracewayapp/traceway-ios.git", from: "0.1.0")';
 		case 'custom':
 		default:
 			return base;
@@ -320,7 +324,7 @@ $kernel->terminate($request, $response);`;
 
 		case 'laravel':
 			return `<?php
-// .env  — point the OTLP exporter at Traceway
+// .env  - point the OTLP exporter at Traceway
 //
 // OTEL_SERVICE_NAME=my-laravel-app
 // OTEL_TRACES_EXPORTER=otlp
@@ -333,11 +337,33 @@ $kernel->terminate($request, $response);`;
 // Optional: send Laravel logs to Traceway via the auto-injected 'otlp' channel
 // LOG_CHANNEL=otlp
 
-// That's it — keepsuit/laravel-opentelemetry's service provider auto-registers
+// That's it - keepsuit/laravel-opentelemetry's service provider auto-registers
 // TraceRequestMiddleware as a global middleware, so every HTTP request, DB query,
 // queued job, Redis call, cache op, view render and outbound Http:: call is
 // traced automatically. Open config/opentelemetry.php to tune which
 // instrumentations are enabled.`;
+
+		case 'django':
+			return `# .env  - point the OTLP exporter at Traceway
+#
+# OTEL_SERVICE_NAME=my-django-app
+# OTEL_TRACES_EXPORTER=otlp
+# OTEL_METRICS_EXPORTER=otlp
+# OTEL_LOGS_EXPORTER=otlp
+# OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+# OTEL_EXPORTER_OTLP_ENDPOINT=${backendUrl}/api/otel
+# OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20${token || 'YOUR_TOKEN'}
+# OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
+
+# Then launch Django through the OTel agent - no code changes needed:
+#
+#   opentelemetry-instrument python manage.py runserver
+#   opentelemetry-instrument gunicorn myproject.wsgi:application
+#
+# DjangoInstrumentor auto-installs middleware at index 0 and traces every
+# inbound request. opentelemetry-bootstrap also wired psycopg/redis/requests/
+# celery/logging instrumentation, so DB queries, cache ops, outbound HTTP
+# and queued tasks are traced automatically.`;
 
 		case 'hono':
 			return '';
@@ -376,6 +402,26 @@ class MyApp : Application() {
             connectionString = "${connectionString}",
             options = TracewayOptions(version = "1.0.0"),
         )
+    }
+}`;
+
+		case 'ios':
+			return `import SwiftUI
+import Traceway
+
+@main
+struct MyApp: App {
+    init() {
+        Traceway.start(
+            connectionString: "${connectionString}",
+            options: TracewayOptions(version: "1.0.0")
+        )
+    }
+
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+        }
     }
 }`;
 
@@ -424,6 +470,23 @@ Route::get('/testing', function () {
     throw new \\RuntimeException('Test error from Traceway integration');
 });`;
 	}
+	if (framework === 'django') {
+		return `# myapp/views.py
+from django.http import HttpResponse
+
+
+def testing(request):
+    raise RuntimeError("Test error from Traceway integration")
+
+
+# myproject/urls.py
+from django.urls import path
+from myapp import views
+
+urlpatterns = [
+    path("testing/", views.testing),
+]`;
+	}
 	if (framework === 'flutter') {
 		return `// Trigger a test error
 throw StateError('Test error from Traceway integration');`;
@@ -431,6 +494,10 @@ throw StateError('Test error from Traceway integration');`;
 	if (framework === 'android') {
 		return `// Trigger a test error
 throw RuntimeException("Test error from Traceway integration")`;
+	}
+	if (framework === 'ios') {
+		return `// Trigger a test error
+fatalError("Test error from Traceway integration")`;
 	}
 	if (framework && isJsFramework(framework)) {
 		return `// Trigger a test error
@@ -448,6 +515,9 @@ export function getTestingRouteCode2(framework?: Framework): string {
 	if (framework === 'laravel') {
 		return '';
 	}
+	if (framework === 'django') {
+		return '';
+	}
 	if (framework === 'flutter') {
 		return `import 'package:traceway/traceway.dart';
 
@@ -463,6 +533,15 @@ try {
     riskyOperation()
 } catch (e: Throwable) {
     Traceway.captureException(e)
+}`;
+	}
+	if (framework === 'ios') {
+		return `import Traceway
+
+do {
+    try riskyOperation()
+} catch {
+    Traceway.capture(error)
 }`;
 	}
 	if (framework && isJsFramework(framework)) {
@@ -513,16 +592,26 @@ captureException(new Error("Test error"));`;
 
 function getPackageName(framework: Framework): string {
 	switch (framework) {
-		case 'react': return 'react';
-		case 'svelte': return 'svelte';
-		case 'vuejs': return 'vue';
-		case 'nextjs': return 'next';
-		case 'nestjs': return 'nest';
-		case 'express': return 'express';
-		case 'remix': return 'remix';
-		case 'jquery': return 'jquery';
-		case 'react-native': return 'react-native';
-		default: return 'react';
+		case 'react':
+			return 'react';
+		case 'svelte':
+			return 'svelte';
+		case 'vuejs':
+			return 'vue';
+		case 'nextjs':
+			return 'next';
+		case 'nestjs':
+			return 'nest';
+		case 'express':
+			return 'express';
+		case 'remix':
+			return 'remix';
+		case 'jquery':
+			return 'jquery';
+		case 'react-native':
+			return 'react-native';
+		default:
+			return 'react';
 	}
 }
 
@@ -548,19 +637,25 @@ export function getFrameworkLabel(framework: Framework): string {
 		opentelemetry: 'OpenTelemetry',
 		symfony: 'Symfony',
 		laravel: 'Laravel',
+		django: 'Django',
 		flutter: 'Flutter',
 		android: 'Android',
+		ios: 'iOS'
 	};
 	return labels[framework] || framework;
 }
 
-export function getCodeLanguage(framework: Framework): 'go' | 'javascript' | 'bash' | 'php' {
+export function getCodeLanguage(
+	framework: Framework
+): 'go' | 'javascript' | 'bash' | 'php' | 'python' {
 	if (framework === 'symfony') return 'php';
 	if (framework === 'laravel') return 'php';
+	if (framework === 'django') return 'python';
 	if (framework === 'opentelemetry') return 'go';
 	if (framework === 'hono') return 'javascript';
 	if (framework === 'cloudflare') return 'javascript';
 	if (framework === 'flutter') return 'javascript'; // closest to Dart syntax highlighting
 	if (framework === 'android') return 'javascript'; // closest to Kotlin syntax highlighting
+	if (framework === 'ios') return 'javascript';
 	return isJsFramework(framework) ? 'javascript' : 'go';
 }

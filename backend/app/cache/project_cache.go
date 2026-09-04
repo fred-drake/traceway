@@ -1,14 +1,15 @@
 package cache
 
 import (
-	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/db"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
 	"context"
 	"database/sql"
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/tracewayapp/traceway/backend/app/db"
+	"github.com/tracewayapp/traceway/backend/app/models"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 
 	"github.com/google/uuid"
 )
@@ -18,6 +19,7 @@ type projectCache struct {
 	projectsById             map[uuid.UUID]*models.Project // key: id
 	projectsBySourceMapToken map[string]*models.Project    // key: source_map_token
 	mu                       sync.RWMutex
+	refreshMu                sync.Mutex
 	lastRefresh              time.Time
 }
 
@@ -28,12 +30,19 @@ var ProjectCache = &projectCache{
 }
 
 func (c *projectCache) Init(ctx context.Context) error {
+	if err := c.startListener(ctx); err != nil {
+		return err
+	}
+
 	return c.Refresh(ctx)
 }
 
 func (c *projectCache) Refresh(ctx context.Context) error {
+	c.refreshMu.Lock()
+	defer c.refreshMu.Unlock()
+
 	projects, err := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.Project, error) {
-		return repositories.ProjectRepository.FindAll(tx)
+		return transactional.ProjectRepository.FindAll(tx)
 	})
 	if err != nil {
 		return err
@@ -59,16 +68,28 @@ func (c *projectCache) Refresh(ctx context.Context) error {
 	return nil
 }
 
+func copyProject(proj *models.Project) *models.Project {
+	if proj == nil {
+		return nil
+	}
+	cp := *proj
+	cp.HealthcheckPaths = append(models.StringSlice(nil), proj.HealthcheckPaths...)
+	cp.ProfileLabelAllowlist = append(models.StringSlice(nil), proj.ProfileLabelAllowlist...)
+	cp.AiFlaggedTerms = append(models.StringSlice(nil), proj.AiFlaggedTerms...)
+	cp.AiFlaggedLanguages = append(models.StringSlice(nil), proj.AiFlaggedLanguages...)
+	return &cp
+}
+
 func (c *projectCache) GetByToken(token string) *models.Project {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.projects[token]
+	return copyProject(c.projects[token])
 }
 
 func (c *projectCache) GetById(id uuid.UUID) *models.Project {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.projectsById[id]
+	return copyProject(c.projectsById[id])
 }
 
 func (c *projectCache) GetAll() []*models.Project {
@@ -77,7 +98,7 @@ func (c *projectCache) GetAll() []*models.Project {
 
 	result := make([]*models.Project, 0, len(c.projectsById))
 	for _, proj := range c.projectsById {
-		result = append(result, proj)
+		result = append(result, copyProject(proj))
 	}
 
 	sort.Slice(result, func(i, j int) bool {
@@ -106,6 +127,11 @@ func (c *projectCache) UpdateProject(proj *models.Project) {
 	}
 	cached.Name = proj.Name
 	cached.Framework = proj.Framework
+	cached.DropHealthyHealthchecks = proj.DropHealthyHealthchecks
+	cached.HealthcheckPaths = proj.HealthcheckPaths
+	cached.ProfileLabelAllowlist = proj.ProfileLabelAllowlist
+	cached.AiFlaggedTerms = proj.AiFlaggedTerms
+	cached.AiFlaggedLanguages = proj.AiFlaggedLanguages
 }
 
 func (c *projectCache) RemoveProject(id uuid.UUID) {
@@ -125,7 +151,7 @@ func (c *projectCache) RemoveProject(id uuid.UUID) {
 func (c *projectCache) GetBySourceMapToken(token string) *models.Project {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.projectsBySourceMapToken[token]
+	return copyProject(c.projectsBySourceMapToken[token])
 }
 
 func (c *projectCache) UpdateSourceMapToken(projectId uuid.UUID, token string) {
@@ -146,4 +172,10 @@ func (c *projectCache) LastRefresh() time.Time {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.lastRefresh
+}
+
+func (c *projectCache) Entries() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.projectsById)
 }

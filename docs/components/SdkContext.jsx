@@ -1,165 +1,105 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react'
 import { useRouter } from 'next/router'
 
+// One entry per integration path. Every backend (Go, Node, Python, PHP, Java,
+// .NET, Ruby) is the single `otel` option, and the per-framework guides live
+// inside /client/otel.
 export const SDK_OPTIONS = [
-  { value: 'go-gin', label: 'Go Gin' },
-  { value: 'go-chi', label: 'Go Chi' },
-  { value: 'go-fiber', label: 'Go Fiber' },
-  { value: 'go-fasthttp', label: 'Go FastHTTP' },
-  { value: 'go-http', label: 'Go Http' },
-  { value: 'go-generic', label: 'Go Generic' },
-  { value: 'js-node', label: 'Node.js (OTel)' },
-  { value: 'js-nestjs', label: 'NestJS (OTel)' },
-  { value: 'js-hono', label: 'Hono' },
+  { value: 'otel', label: 'OpenTelemetry (any backend)' },
   { value: 'js-react', label: 'React' },
   { value: 'js-vue', label: 'Vue.js' },
   { value: 'js-svelte', label: 'Svelte' },
   { value: 'js-jquery', label: 'jQuery' },
   { value: 'js-generic', label: 'JS Generic' },
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'otel', label: 'OpenTelemetry (otel)' },
-  { value: 'cloudflare', label: 'Cloudflare Workers' },
-  { value: 'js-nextjs', label: 'Next.js (OTel)' },
-  { value: 'php-symfony', label: 'Symfony' },
-  { value: 'php-laravel', label: 'Laravel' },
   { value: 'flutter', label: 'Flutter' },
   { value: 'android', label: 'Android' },
+  { value: 'ios', label: 'iOS' },
   { value: 'react-native', label: 'React Native' },
+  { value: 'openrouter', label: 'OpenRouter' },
 ]
 
 const STORAGE_KEY = 'traceway-docs-sdk'
 const VALID_VALUES = new Set(SDK_OPTIONS.map((o) => o.value))
 
-// IMPORTANT: longer/more-specific path segments must come before any shorter
-// substring that would otherwise match first. `react-native` must precede
-// `react`, otherwise `/client/react-native` would match `/react` first.
-const PATH_SDK_MAP = {
-  'gin-middleware': 'go-gin',
-  'chi-middleware': 'go-chi',
-  'fiber-middleware': 'go-fiber',
-  'fasthttp-middleware': 'go-fasthttp',
-  'http-middleware': 'go-http',
-  'node-sdk': 'js-node',
-  'nestjs': 'js-nestjs',
-  'hono': 'js-hono',
-  'react-native': 'react-native',
+// First path segment after /client/ → exact SDK value. These folders map 1:1
+// to a single framework, so the path alone is authoritative.
+const FOLDER_SDK = {
+  'otel': 'otel',
   'react': 'js-react',
+  'react-native': 'react-native',
   'vue': 'js-vue',
   'svelte': 'js-svelte',
   'jquery': 'js-jquery',
   'openrouter': 'openrouter',
-  'otel': 'otel',
-  'cloudflare': 'cloudflare',
-  'nextjs': 'js-nextjs',
-  'symfony': 'php-symfony',
-  'laravel': 'php-laravel',
   'flutter': 'flutter',
   'android': 'android',
+  'ios': 'ios',
+}
+
+// Shared reference folders. The SDK cannot be derived from the path alone, so
+// it is disambiguated by the remembered framework (lastSdk) when that belongs
+// to the folder's group, otherwise by a generic fallback.
+const SHARED_FOLDERS = {
+  'js-sdk': {
+    members: new Set(['js-react', 'js-vue', 'js-svelte', 'js-jquery', 'js-generic']),
+    fallback: 'js-generic',
+  },
+}
+
+function clientSegment(pathname) {
+  if (!pathname || !pathname.startsWith('/client')) return undefined
+  return pathname.split('/').filter(Boolean)[1]
+}
+
+// The path is the single source of truth for the active SDK. `concrete` is true
+// when the path unambiguously implies the SDK (so it should be remembered).
+export function resolveSdkFromPath(pathname, lastSdk) {
+  const seg = clientSegment(pathname)
+  if (seg === undefined) return { sdk: null, concrete: false }
+  if (FOLDER_SDK[seg]) return { sdk: FOLDER_SDK[seg], concrete: true }
+  const shared = SHARED_FOLDERS[seg]
+  if (shared) {
+    if (lastSdk && shared.members.has(lastSdk)) return { sdk: lastSdk, concrete: false }
+    return { sdk: shared.fallback, concrete: false }
+  }
+  return { sdk: null, concrete: false }
 }
 
 const SdkContext = createContext({
-  sdk: 'go-gin',
+  sdk: null,
   setSdk: () => {},
 })
 
 export function SdkProvider({ children }) {
   const router = useRouter()
-  const [sdk, setSdkState] = useState('go-gin')
+  const [sdk, setSdkState] = useState(null)
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const urlSdk = params.get('sdk')
-    if (urlSdk && VALID_VALUES.has(urlSdk)) {
-      setSdkState(urlSdk)
-      localStorage.setItem(STORAGE_KEY, urlSdk)
-      return
+    const asPath = router.asPath
+    const hashIdx = asPath.indexOf('#')
+    const hash = hashIdx >= 0 ? asPath.slice(hashIdx) : ''
+    const noHash = hashIdx >= 0 ? asPath.slice(0, hashIdx) : asPath
+    const qIdx = noHash.indexOf('?')
+    const pathname = qIdx >= 0 ? noHash.slice(0, qIdx) : noHash
+    const params = new URLSearchParams(qIdx >= 0 ? noHash.slice(qIdx + 1) : '')
+
+    const lastSdk = localStorage.getItem(STORAGE_KEY)
+    const { sdk: resolved, concrete } = resolveSdkFromPath(pathname, lastSdk)
+    if (resolved) {
+      setSdkState(resolved)
+      if (concrete && VALID_VALUES.has(resolved)) {
+        localStorage.setItem(STORAGE_KEY, resolved)
+      }
     }
 
-    const stored = localStorage.getItem(STORAGE_KEY)
-    if (stored && VALID_VALUES.has(stored)) {
-      setSdkState(stored)
-    }
-  }, [])
-
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search)
-    const urlSdk = params.get('sdk')
-    if (urlSdk && VALID_VALUES.has(urlSdk) && urlSdk !== sdk) {
-      setSdkState(urlSdk)
-      localStorage.setItem(STORAGE_KEY, urlSdk)
+    // Self-heal: strip any stray ?sdk= so /client URLs stay clean and old
+    // bookmarks that pinned the wrong SDK correct themselves.
+    if (pathname.startsWith('/client') && params.has('sdk')) {
+      params.delete('sdk')
+      const qs = params.toString()
+      router.replace(pathname + (qs ? '?' + qs : '') + hash, undefined, { shallow: true })
     }
   }, [router.asPath])
-
-  // Keep sdk param sticky on all /client pages
-  useEffect(() => {
-    function handleRouteChange(url) {
-      if (!url.startsWith('/client')) return
-
-      const hashIdx = url.indexOf('#')
-      const questionIdx = url.indexOf('?')
-
-      let pathname, search, hash
-      if (hashIdx === -1 && questionIdx === -1) {
-        pathname = url; search = ''; hash = ''
-      } else if (questionIdx !== -1 && (hashIdx === -1 || questionIdx < hashIdx)) {
-        pathname = url.substring(0, questionIdx)
-        const rest = url.substring(questionIdx + 1)
-        const restHash = rest.indexOf('#')
-        if (restHash !== -1) {
-          search = rest.substring(0, restHash)
-          hash = rest.substring(restHash)
-        } else {
-          search = rest; hash = ''
-        }
-      } else {
-        pathname = url.substring(0, hashIdx)
-        const rest = url.substring(hashIdx)
-        const restQ = rest.indexOf('?')
-        if (restQ !== -1) {
-          hash = rest.substring(0, restQ)
-          search = rest.substring(restQ + 1)
-        } else {
-          hash = rest; search = ''
-        }
-      }
-
-      const params = new URLSearchParams(search)
-
-      if (pathname === '/client') {
-        if (params.has('sdk')) {
-          params.delete('sdk')
-          const qs = params.toString()
-          router.replace(pathname + (qs ? '?' + qs : '') + hash, undefined, { shallow: true })
-        }
-        localStorage.removeItem(STORAGE_KEY)
-        setSdkState('go-gin')
-        return
-      }
-
-      if (!params.get('sdk')) {
-        let detectedSdk = null
-        for (const [folder, sdkValue] of Object.entries(PATH_SDK_MAP)) {
-          if (pathname.includes('/' + folder)) {
-            detectedSdk = sdkValue
-            break
-          }
-        }
-        const sdkToUse = detectedSdk || localStorage.getItem(STORAGE_KEY) || sdk
-        if (sdkToUse && VALID_VALUES.has(sdkToUse)) {
-          params.set('sdk', sdkToUse)
-          if (detectedSdk) {
-            setSdkState(detectedSdk)
-            localStorage.setItem(STORAGE_KEY, detectedSdk)
-          }
-          const qs = params.toString()
-          router.replace(pathname + (qs ? '?' + qs : '') + hash, undefined, { shallow: true })
-        }
-      }
-    }
-
-    router.events.on('routeChangeComplete', handleRouteChange)
-    return () => router.events.off('routeChangeComplete', handleRouteChange)
-  }, [router, sdk])
 
   const setSdk = useCallback((value) => {
     if (!VALID_VALUES.has(value)) return

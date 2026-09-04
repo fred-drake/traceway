@@ -1,71 +1,110 @@
 <mxfile host="app.diagrams.net" agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36" version="29.3.6">
   <diagram name="Page-1" id="wy32oRJBnUYnc9i8Ji1n">
-    <mxGraphModel dx="815" dy="558" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0">
+    <mxGraphModel dx="815" dy="558" grid="0" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="850" pageHeight="1100" math="0" shadow="0" adaptiveColors="auto">
       <root>
         <mxCell id="0" />
         <mxCell id="1" parent="0" />
-        <mxCell id="nGLuf51OtG82o4zcJS6--42" edge="1" parent="1" source="nGLuf51OtG82o4zcJS6--3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="nGLuf51OtG82o4zcJS6--21">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="dt-1" parent="1" style="rounded=0;whiteSpace=wrap;html=1;dashed=1;verticalAlign=top;align=center;spacingTop=2;fontSize=11;" value="&lt;b&gt;Distributed Trace&lt;/b&gt; &amp;nbsp;&lt;i&gt;traces from any service that share a distributedTraceId are grouped together&lt;/i&gt;" vertex="1">
+          <mxGeometry height="150" width="640" x="105" y="40" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--48" edge="1" parent="1" source="nGLuf51OtG82o4zcJS6--3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" target="nGLuf51OtG82o4zcJS6--46">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="trace-1" parent="1" style="swimlane;whiteSpace=wrap;html=1;expand=1;collapsible=0;" value="Trace" vertex="1">
+          <mxGeometry height="103" width="450" x="200" y="70" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--3" parent="1" style="swimlane;whiteSpace=wrap;html=1;expand=1;collapsible=0;" value="Trace" vertex="1">
-          <mxGeometry height="103" width="270" x="186" y="79" as="geometry" />
+        <mxCell id="trace-2" parent="trace-1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Endpoint&lt;/b&gt;&lt;br&gt;&lt;i&gt;GET /users/:id&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="135" x="11" y="31" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--4" parent="nGLuf51OtG82o4zcJS6--3" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Endpoint&lt;/b&gt;&lt;br&gt;&lt;i&gt;GET /users/:id&lt;/i&gt;" vertex="1">
+        <mxCell id="trace-3" parent="trace-1" style="rounded=0;whiteSpace=wrap;html=1;spacing=2;" value="&lt;b&gt;Task&lt;/b&gt;&lt;br&gt;&lt;i&gt;send-notifications&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="135" x="157" y="31" as="geometry" />
+        </mxCell>
+        <mxCell id="trace-4" parent="trace-1" style="rounded=0;whiteSpace=wrap;html=1;spacing=2;" value="&lt;b&gt;AI Trace&lt;/b&gt;&lt;br&gt;&lt;i&gt;chat claude-sonnet-5&lt;/i&gt;" vertex="1">
+          <mxGeometry height="60" width="135" x="303" y="31" as="geometry" />
+        </mxCell>
+        <mxCell id="issue-1" parent="1" style="swimlane;whiteSpace=wrap;html=1;expand=1;collapsible=0;" value="Issue" vertex="1">
+          <mxGeometry height="103" width="270" x="30" y="330" as="geometry" />
+        </mxCell>
+        <mxCell id="issue-2" parent="issue-1" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Exception&lt;/b&gt;&lt;br&gt;&lt;i&gt;db failed to open&lt;/i&gt;" vertex="1">
           <mxGeometry height="60" width="120" x="11" y="31" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--6" parent="nGLuf51OtG82o4zcJS6--3" style="rounded=0;whiteSpace=wrap;html=1;spacing=2;" value="&lt;b&gt;Task&lt;/b&gt;&lt;br&gt;&lt;i&gt;send-notifications&lt;/i&gt;" vertex="1">
+        <mxCell id="issue-3" parent="issue-1" style="rounded=0;whiteSpace=wrap;html=1;spacing=2;" value="&lt;b&gt;Message&lt;/b&gt;&lt;br&gt;&lt;i&gt;captured log text&lt;/i&gt;" vertex="1">
           <mxGeometry height="60" width="120" x="139" y="31" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--41" edge="1" parent="1" source="nGLuf51OtG82o4zcJS6--8" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;" target="nGLuf51OtG82o4zcJS6--21">
-          <mxGeometry relative="1" as="geometry" />
+        <mxCell id="issue-4" parent="1" style="text;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;html=1;fontSize=11;" value="Occurrences are grouped into Issues by a normalized hash of the stack trace" vertex="1">
+          <mxGeometry height="30" width="270" x="30" y="437" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--8" parent="1" style="swimlane;whiteSpace=wrap;html=1;expand=1;collapsible=0;" value="Issue" vertex="1">
-          <mxGeometry height="103" width="270" x="12" y="274" as="geometry" />
+        <mxCell id="spans-1" parent="1" style="swimlane;whiteSpace=wrap;html=1;expand=1;collapsible=0;" value="Spans" vertex="1">
+          <mxGeometry height="110" width="200" x="580" y="330" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--9" parent="nGLuf51OtG82o4zcJS6--8" style="rounded=0;whiteSpace=wrap;html=1;" value="&lt;b&gt;Exception&lt;/b&gt;&lt;br&gt;&lt;i&gt;db failed to open&lt;/i&gt;" vertex="1">
-          <mxGeometry height="60" width="120" x="11" y="31" as="geometry" />
+        <mxCell id="spans-2" parent="spans-1" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;whiteSpace=wrap;html=1;fontStyle=2" value="Name: db.load.user&lt;div&gt;Started At: {time}&lt;br&gt;Duration: {time}&lt;br&gt;Parent Span: {span id}&lt;/div&gt;" vertex="1">
+          <mxGeometry height="70" width="176" x="12" y="30" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--10" parent="nGLuf51OtG82o4zcJS6--8" style="rounded=0;whiteSpace=wrap;html=1;spacing=2;" value="&lt;b&gt;Message&lt;/b&gt;&lt;div&gt;&lt;br/&gt;&lt;/div&gt;" vertex="1">
-          <mxGeometry height="60" width="120" x="139" y="31" as="geometry" />
+        <mxCell id="spans-3" parent="1" style="text;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;html=1;fontSize=11;" value="Spans nest under each other via their Parent Span" vertex="1">
+          <mxGeometry height="30" width="220" x="570" y="444" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--11" edge="1" parent="1" source="nGLuf51OtG82o4zcJS6--3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;">
+        <mxCell id="attr-1" parent="1" style="swimlane;whiteSpace=wrap;html=1;expand=1;collapsible=0;" value="Attributes" vertex="1">
+          <mxGeometry height="79" width="110" x="370" y="560" as="geometry" />
+        </mxCell>
+        <mxCell id="attr-2" parent="attr-1" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;rotatable=0;whiteSpace=wrap;html=1;fontStyle=2" value="Key: UserId&amp;nbsp;&lt;div&gt;Value: 10&lt;/div&gt;" vertex="1">
+          <mxGeometry height="42" width="90" x="12" y="30" as="geometry" />
+        </mxCell>
+        <mxCell id="e-issue" edge="1" parent="1" source="trace-1" target="issue-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;">
           <mxGeometry relative="1" as="geometry">
             <Array as="points">
-              <mxPoint x="145" y="131" />
-              <mxPoint x="145" y="275" />
+              <mxPoint x="165" y="121" />
+              <mxPoint x="165" y="280" />
             </Array>
-            <mxPoint x="145" y="274" as="targetPoint" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--12" connectable="0" parent="nGLuf51OtG82o4zcJS6--11" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Traces can have Issues&amp;nbsp;&lt;div&gt;attached to them&lt;/div&gt;" vertex="1">
-          <mxGeometry relative="1" x="-0.497" y="3" as="geometry">
-            <mxPoint x="-35" y="-26" as="offset" />
+        <mxCell id="e-issue-label" connectable="0" parent="e-issue" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Traces can have Issues attached&lt;div&gt;via &lt;i&gt;trace id + trace type&lt;/i&gt;&lt;/div&gt;" vertex="1">
+          <mxGeometry relative="1" x="-0.4" y="0" as="geometry">
+            <mxPoint x="-60" y="-40" as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--21" parent="1" style="swimlane;whiteSpace=wrap;html=1;expand=1;collapsible=0;" value="Attributes" vertex="1">
-          <mxGeometry height="79" width="104" x="269" y="437" as="geometry" />
-        </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--39" parent="nGLuf51OtG82o4zcJS6--21" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;fontStyle=2" value="Key: UserId&amp;nbsp;&lt;div&gt;Value: 10&lt;/div&gt;" vertex="1">
-          <mxGeometry height="42" width="106" x="15" y="30" as="geometry" />
-        </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--44" connectable="0" parent="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="A Trace can have&amp;nbsp;&lt;div&gt;multiple Attributes&lt;/div&gt;" vertex="1">
-          <mxGeometry x="377" y="305" as="geometry">
-            <mxPoint x="-8" y="4" as="offset" />
+        <mxCell id="e-spans" edge="1" parent="1" source="trace-1" target="spans-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="680" y="121" />
+              <mxPoint x="680" y="280" />
+            </Array>
           </mxGeometry>
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--45" connectable="0" parent="1" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="An Issue can have&amp;nbsp;&lt;div&gt;multiple additional Attributes&lt;/div&gt;" vertex="1">
-          <mxGeometry x="131" y="494" as="geometry">
-            <mxPoint x="-8" y="4" as="offset" />
+        <mxCell id="e-spans-label" connectable="0" parent="e-spans" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="A Trace can have multiple Spans" vertex="1">
+          <mxGeometry relative="1" x="-0.4" y="0" as="geometry">
+            <mxPoint x="63" y="-40" as="offset" />
           </mxGeometry>
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--46" parent="1" style="swimlane;whiteSpace=wrap;html=1;expand=1;collapsible=0;" value="Spans" vertex="1">
-          <mxGeometry height="93" width="198" x="460" y="271" as="geometry" />
+        <mxCell id="e-attr" edge="1" parent="1" source="trace-1" target="attr-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="nGLuf51OtG82o4zcJS6--47" parent="nGLuf51OtG82o4zcJS6--46" style="text;strokeColor=none;fillColor=none;align=left;verticalAlign=middle;spacingLeft=4;spacingRight=4;overflow=hidden;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;rotatable=0;whiteSpace=wrap;html=1;fontStyle=2" value="Name:db.load.user&lt;div&gt;Started At: {time}&lt;br&gt;Duration: {time}&lt;/div&gt;" vertex="1">
-          <mxGeometry height="54" width="174" x="15" y="30" as="geometry" />
+        <mxCell id="e-attr-label" connectable="0" parent="e-attr" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="A Trace can have&lt;div&gt;multiple Attributes&lt;/div&gt;" vertex="1">
+          <mxGeometry relative="1" x="0.55" y="0" as="geometry">
+            <mxPoint x="1" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-issue-attr" edge="1" parent="1" source="issue-1" target="attr-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=1;exitY=0.5;exitDx=0;exitDy=0;entryX=0;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="335" y="382" />
+              <mxPoint x="335" y="600" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-issue-attr-label" connectable="0" parent="e-issue-attr" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="An Issue can have&lt;div&gt;multiple additional Attributes&lt;/div&gt;" vertex="1">
+          <mxGeometry relative="1" x="0.5" y="0" as="geometry">
+            <mxPoint x="-78" y="0" as="offset" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-spans-attr" edge="1" parent="1" source="spans-1" target="attr-1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0;exitY=0.5;exitDx=0;exitDy=0;entryX=1;entryY=0.5;entryDx=0;entryDy=0;">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="520" y="385" />
+              <mxPoint x="520" y="600" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e-spans-attr-label" connectable="0" parent="e-spans-attr" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];" value="Spans can have&lt;div&gt;Attributes as well&lt;/div&gt;" vertex="1">
+          <mxGeometry relative="1" x="0.5" y="0" as="geometry">
+            <mxPoint x="62" y="0" as="offset" />
+          </mxGeometry>
         </mxCell>
       </root>
     </mxGraphModel>

@@ -1,0 +1,97 @@
+name: Backend Vulncheck
+
+# The backend ships a binary to users: release-traceway.yml builds the
+# traceway-runner artifacts from backend/go.mod, and that binary runs on user
+# infrastructure with an outbound HTTPS long-poll as its main loop.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      # backend/go.mod carries `replace ... /cli => ../cli`, so cli source is
+      # compiled into this scan and a cli-only change can alter the result.
+      - "cli/**"
+      - ".github/workflows/backend-vulncheck.yml"
+  pull_request:
+    types: [labeled]
+    paths:
+      - "backend/**"
+      - "cli/**"
+      - ".github/workflows/backend-vulncheck.yml"
+  # A CVE lands in the database without anyone pushing a commit, and both
+  # triggers above are path-filtered. Off-the-hour to miss GitHub's
+  # on-the-hour scheduler backlog.
+  schedule:
+    - cron: "41 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # One job per shipped storage backend, because the tags change which drivers
+  # compile in: `go list -deps ./cmd/traceway` returns 0 ClickHouse packages by
+  # default and 11 under transactional_pg,telemetry_ch. Rows map to
+  # Dockerfile.sqlite / Dockerfile.duckdb+.browser / Dockerfile+.minimal; see
+  # docs/pages/learn/build-tags.mdx.
+  #
+  # Storage axis only. The orthogonal `oxc` symbolicator tag needs
+  # scripts/build-oxc-shim.sh to compile, and only linux/amd64 is scanned
+  # though release also cross-compiles the runner for darwin and windows --
+  # both are follow-ups.
+  vulncheck:
+    name: vulncheck (${{ matrix.name }})
+    if: github.event_name != 'pull_request' || github.event.label.name == 'ci'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      # Which backend a CVE reaches through is the question this job answers.
+      fail-fast: false
+      matrix:
+        include:
+          - name: default (dual SQLite)
+            tags: ""
+            cgo: "0"
+          - name: telemetry_duckdb
+            tags: telemetry_duckdb
+            cgo: "1"
+          - name: transactional_pg telemetry_ch
+            tags: transactional_pg,telemetry_ch
+            cgo: "0"
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # setup-go@v7 installs the `toolchain` version of go.mod directly, so the
+      # scan runs on the same release release-traceway.yml builds the runner
+      # with. The Docker images are not covered by that: their golang bases pin
+      # GOTOOLCHAIN=local, so they ignore the `toolchain` line and build with
+      # whatever the floating golang:1.26-* tag ships, which is >= what is
+      # scanned here. One setup-go cache shared by the three rows is fine here,
+      # unlike backend.yml: with no -race and no test builds the module cache
+      # is what matters, and it is identical across rows.
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      # Pinned so a tool release cannot redden an unrelated PR. Costs no
+      # freshness: the advisory database is fetched at run time, so the
+      # schedule keeps this current, not the binary version.
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+
+      # No -test: the gate is about what ships.
+      - name: Vulncheck
+        env:
+          TAGS: ${{ matrix.tags }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+        run: govulncheck -tags "$TAGS" ./...

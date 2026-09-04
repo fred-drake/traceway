@@ -11,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/oncall"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 	"github.com/tracewayapp/traceway/backend/app/storage"
 
 	"github.com/gin-gonic/gin"
@@ -33,8 +36,13 @@ type ExceptionSearchRequest struct {
 	IncludeArchived bool             `json:"includeArchived"`
 }
 
+const maxBulkIssueHashes = 100
+
 type ArchiveRequest struct {
 	Hashes []string `json:"hashes"`
+	// ResolvePages also resolves any unresolved on-call pages that were opened
+	// for these issues (archive path only, confirmed by the user in the dialog).
+	ResolvePages bool `json:"resolvePages"`
 }
 
 type ExceptionDetailRequest struct {
@@ -86,12 +94,12 @@ func (e exceptionStackTraceController) FindGrouppedExceptionStackTraces(c *gin.C
 
 	var request ExceptionSearchRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
 	span := traceway.StartSpan(c, "loading grouped exceptions")
-	exceptions, total, err := repositories.ExceptionStackTraceRepository.FindGrouped(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.Search, request.SearchType, request.IncludeArchived)
+	exceptions, total, err := telemetry.ExceptionStackTraceRepository.FindGrouped(c, projectId, request.FromDate, request.ToDate, request.Pagination.Page, request.Pagination.PageSize, request.OrderBy, request.Search, request.SearchType, request.IncludeArchived)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading exceptions: %w", err))
@@ -109,7 +117,7 @@ func (e exceptionStackTraceController) FindGrouppedExceptionStackTraces(c *gin.C
 		start24h := now.Add(-24 * time.Hour)
 
 		span = traceway.StartSpan(c, "loading hourly trends")
-		trends, err := repositories.ExceptionStackTraceRepository.GetHourlyTrendForHashes(c, projectId, hashes, start24h, now)
+		trends, err := telemetry.ExceptionStackTraceRepository.GetHourlyTrendForHashes(c, projectId, hashes, start24h, now)
 		span.End()
 		if err != nil {
 			c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading trends: %w", err))
@@ -157,7 +165,7 @@ func (e exceptionStackTraceController) FindByHash(c *gin.Context) {
 	}
 
 	span := traceway.StartSpan(c, "loading exception by hash")
-	group, occurrences, total, err := repositories.ExceptionStackTraceRepository.FindByHash(c, projectId, exceptionHash, request.Pagination.Page, request.Pagination.PageSize)
+	group, occurrences, total, err := telemetry.ExceptionStackTraceRepository.FindByHash(c, projectId, exceptionHash, request.Pagination.Page, request.Pagination.PageSize)
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading the group: %w", err))
@@ -184,7 +192,7 @@ func (e exceptionStackTraceController) FindByHash(c *gin.Context) {
 		// The per-exception 10 s clip and the parent session are independent
 		// attachments — surface both whenever they exist. The dashboard plays
 		// the clip inline and renders a link to the full session.
-		filePath, err := repositories.SessionRecordingRepository.FindByExceptionId(c, projectId, occurrences[0].Id)
+		filePath, err := telemetry.SessionRecordingRepository.FindByExceptionId(c, projectId, occurrences[0].Id)
 		if err == nil && filePath != "" {
 			recording, err := loadSessionRecording(c, filePath)
 			if err == nil {
@@ -196,7 +204,7 @@ func (e exceptionStackTraceController) FindByHash(c *gin.Context) {
 			traceway.CaptureException(fmt.Errorf("failed to load session recording ref for exception %s: %w", occurrences[0].Id, err))
 		}
 
-		sessionId, err := repositories.ExceptionStackTraceRepository.GetSessionIdForException(c, projectId, occurrences[0].Id)
+		sessionId, err := telemetry.ExceptionStackTraceRepository.GetSessionIdForException(c, projectId, occurrences[0].Id)
 		if err == nil && sessionId != nil {
 			response.SessionId = sessionId
 		}
@@ -212,9 +220,11 @@ func (e exceptionStackTraceController) ArchiveExceptions(c *gin.Context) {
 		return
 	}
 
+	limitJSONBody(c)
+
 	var request ArchiveRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -222,14 +232,47 @@ func (e exceptionStackTraceController) ArchiveExceptions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "hashes array is required"})
 		return
 	}
+	if len(request.Hashes) > maxBulkIssueHashes {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("a maximum of %d issues can be archived at once", maxBulkIssueHashes)})
+		return
+	}
 
-	err = repositories.ExceptionStackTraceRepository.ArchiveByHashes(c, projectId, request.Hashes)
+	err = telemetry.ExceptionStackTraceRepository.ArchiveByHashes(c, projectId, request.Hashes)
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error archiving %s: %w", strings.Join(request.Hashes, ","), err))
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"archived": len(request.Hashes)})
+	resolvedPages := 0
+	if request.ResolvePages {
+		userId := middleware.GetUserId(c)
+		now := time.Now().UTC()
+		resolvedPages, err = db.ExecuteTransaction(func(tx *sql.Tx) (int, error) {
+			resolved := 0
+			for _, hash := range request.Hashes {
+				pages, err := transactional.PageRepository.FindUnresolvedByIssueHash(tx, projectId, hash)
+				if err != nil {
+					return 0, err
+				}
+				for _, page := range pages {
+					ok, err := oncall.ResolvePage(tx, page.Id, userId, now)
+					if err != nil {
+						return 0, err
+					}
+					if ok {
+						resolved++
+					}
+				}
+			}
+			return resolved, nil
+		})
+		if err != nil {
+			c.AbortWithError(500, traceway.NewStackTraceErrorf("error resolving pages for archived issues %s: %w", strings.Join(request.Hashes, ","), err))
+			return
+		}
+	}
+
+	c.JSON(http.StatusOK, gin.H{"archived": len(request.Hashes), "resolvedPages": resolvedPages})
 }
 
 func (e exceptionStackTraceController) UnarchiveExceptions(c *gin.Context) {
@@ -239,9 +282,11 @@ func (e exceptionStackTraceController) UnarchiveExceptions(c *gin.Context) {
 		return
 	}
 
+	limitJSONBody(c)
+
 	var request ArchiveRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		middleware.RejectBindError(c, err, err.Error())
 		return
 	}
 
@@ -249,14 +294,22 @@ func (e exceptionStackTraceController) UnarchiveExceptions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "hashes array is required"})
 		return
 	}
+	if len(request.Hashes) > maxBulkIssueHashes {
+		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("a maximum of %d issues can be unarchived at once", maxBulkIssueHashes)})
+		return
+	}
 
-	err = repositories.ExceptionStackTraceRepository.UnarchiveByHashes(c, projectId, request.Hashes)
+	err = telemetry.ExceptionStackTraceRepository.UnarchiveByHashes(c, projectId, request.Hashes)
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error unarchiving %s: %w", strings.Join(request.Hashes, ","), err))
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{"unarchived": len(request.Hashes)})
+}
+
+type exceptionByIdRequest struct {
+	RecordedAt *time.Time `json:"recordedAt"`
 }
 
 func (e exceptionStackTraceController) FindById(c *gin.Context) {
@@ -272,8 +325,14 @@ func (e exceptionStackTraceController) FindById(c *gin.Context) {
 		return
 	}
 
+	var request exceptionByIdRequest
+	_ = c.ShouldBindJSON(&request)
+
 	span := traceway.StartSpan(c, "loading exception by id")
-	exception, err := repositories.ExceptionStackTraceRepository.FindById(c, projectId, exceptionId)
+	exception, err := telemetry.ExceptionStackTraceRepository.FindById(c, projectId, exceptionId, request.RecordedAt)
+	if exception == nil && err == nil && request.RecordedAt != nil {
+		exception, err = telemetry.ExceptionStackTraceRepository.FindById(c, projectId, exceptionId, nil)
+	}
 	span.End()
 	if err != nil {
 		c.AbortWithError(500, traceway.NewStackTraceErrorf("error loading the exception: %w", err))
@@ -287,7 +346,7 @@ func (e exceptionStackTraceController) FindById(c *gin.Context) {
 
 	response := gin.H{"exception": exception}
 
-	filePath, err := repositories.SessionRecordingRepository.FindByExceptionId(c, projectId, exceptionId)
+	filePath, err := telemetry.SessionRecordingRepository.FindByExceptionId(c, projectId, exceptionId)
 	if err == nil && filePath != "" {
 		recording, err := loadSessionRecording(c, filePath)
 		if err == nil {
@@ -299,7 +358,7 @@ func (e exceptionStackTraceController) FindById(c *gin.Context) {
 		traceway.CaptureException(fmt.Errorf("failed to load session recording ref for exception %s: %w", exceptionId, err))
 	}
 
-	sessionId, err := repositories.ExceptionStackTraceRepository.GetSessionIdForException(c, projectId, exceptionId)
+	sessionId, err := telemetry.ExceptionStackTraceRepository.GetSessionIdForException(c, projectId, exceptionId)
 	if err == nil && sessionId != nil {
 		response["sessionId"] = sessionId
 	}

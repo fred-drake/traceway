@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { ExternalLink, Code } from 'lucide-svelte';
+	import { Code } from '@lucide/svelte';
 	import type { Framework } from '$lib/state/projects.svelte';
 	import Highlight from 'svelte-highlight';
 	import go from 'svelte-highlight/languages/go';
@@ -13,23 +13,6 @@
 	let { framework }: Props = $props();
 
 	// TODO: Replace with actual documentation URLs when docs are built
-	function getDocsUrl(fw: Framework): string {
-		switch (fw) {
-			case 'gin':
-				return 'https://docs.traceway.io/go/gin/spans';
-			case 'fiber':
-				return 'https://docs.traceway.io/go/fiber/spans';
-			case 'chi':
-				return 'https://docs.traceway.io/go/chi/spans';
-			case 'fasthttp':
-				return 'https://docs.traceway.io/go/fasthttp/spans';
-			case 'stdlib':
-				return 'https://docs.traceway.io/go/stdlib/spans';
-			default:
-				return 'https://docs.traceway.io/go/spans';
-		}
-	}
-
 	function getCodeExample(fw: Framework): string {
 		switch (fw) {
 			case 'gin':
@@ -73,7 +56,6 @@ span.End()`;
 
 	const GO_FRAMEWORKS: Framework[] = ['gin', 'fiber', 'chi', 'fasthttp', 'stdlib', 'custom'];
 	const isGoFramework = $derived(GO_FRAMEWORKS.includes(framework));
-	const docsUrl = $derived(getDocsUrl(framework));
 	const codeExample = $derived(getCodeExample(framework));
 </script>
 
@@ -91,7 +73,7 @@ span.End()`;
 		<div class="mb-4 w-full max-w-xl text-left">
 			<p class="mb-2 text-xs text-muted-foreground">Example usage:</p>
 			<div
-				class="overflow-hidden rounded-lg text-sm {themeState.isDark ? 'dark-code' : 'light-code'}"
+				class="overflow-hidden rounded-md text-sm {themeState.isDark ? 'dark-code' : 'light-code'}"
 			>
 				<Highlight language={go} code={codeExample} />
 			</div>

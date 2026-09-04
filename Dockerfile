@@ -7,7 +7,9 @@
 # ==============================================================================
 # Stage 1: Build Frontend
 # ==============================================================================
-FROM node:22-alpine AS frontend-builder
+ARG NODE_VERSION=26
+
+FROM node:${NODE_VERSION}-alpine AS frontend-builder
 
 WORKDIR /app/frontend
 
@@ -22,20 +24,21 @@ RUN npm run build
 # ==============================================================================
 # Stage 2: Build Backend with embedded frontend
 # ==============================================================================
-FROM golang:1.25-alpine AS backend-builder
+FROM golang:1.26-alpine AS backend-builder
 
 WORKDIR /app/backend
 
 RUN apk add --no-cache git
 
 COPY backend/ ./
+COPY cli/ /app/cli/
 COPY --from=frontend-builder /app/frontend/build ./static/frontend/
 
 RUN go mod edit -dropreplace=go.tracewayapp.com -dropreplace=go.tracewayapp.com/tracewaygin
 RUN go mod tidy
 RUN go mod download
 
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "pgch" -ldflags="-s -w" -o /traceway ./cmd/traceway
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags "transactional_pg telemetry_ch" -ldflags="-s -w" -o /traceway ./cmd/traceway
 
 # ==============================================================================
 # Stage 3: ClickHouse binary source
@@ -47,7 +50,7 @@ FROM clickhouse/clickhouse-server:24.8-alpine AS clickhouse-source
 # ==============================================================================
 FROM debian:bookworm-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::Retries=3 -o APT::Update::Error-Mode=any && apt-get install -y --no-install-recommends \
     supervisor \
     ca-certificates \
     curl \
@@ -98,7 +101,7 @@ VOLUME ["/var/lib/clickhouse", "/var/lib/postgresql/data"]
 
 EXPOSE 80 8082
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=10s --start-period=300s --retries=3 \
     CMD curl -f http://localhost/health || exit 1
 
 CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/supervisord.conf"]

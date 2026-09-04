@@ -1,6 +1,6 @@
 # Issues
 
-Issues capture problems in your application — exceptions, panics, and explicitly sent messages.
+Issues capture problems in your application: exceptions, panics, and explicitly sent messages.
 
 <img src="/issues.png" alt="Issues Dashboard" style={{ maxWidth: '100%', height: 'auto', marginTop: '16px', borderRadius: '8px', border: '1px solid #e5e7eb' }} />
 
@@ -16,8 +16,8 @@ An issue is created when:
 
 Traceway captures two kinds of issues:
 
-- **Errors** — Runtime exceptions with stack traces (panics, captured errors)
-- **Messages** — Explicitly captured strings sent through the client SDK
+- **Errors**: Runtime exceptions with stack traces (panics, captured errors)
+- **Messages**: Explicitly captured strings sent through the client SDK
 
 Both appear in the Issues list with full context and attributes.
 
@@ -35,26 +35,59 @@ This linkage means:
 
 Issues captured outside of a trace context (no active request or task) are recorded as standalone issues without a trace link.
 
-## Automatic Grouping
+## Fingerprinting
 
-Traceway groups similar exceptions into a single issue by normalizing stack traces:
+Every error is assigned a **fingerprint**: a 16-character hash of its normalized stack trace. The fingerprint is the identity of an issue. All occurrences that share it fold into a single issue, the issue URL contains it (`/issues/<hash>`), and archiving, regression detection, and alerting all key on it.
 
-- Variable values (user IDs, timestamps) are replaced with placeholders
-- Memory addresses and file paths are normalized
-- UUIDs, IP addresses, and numeric IDs are generalized
-- A hash is generated from the normalized trace
+### Why Group Errors
 
-This means the same bug produces one issue, not thousands of duplicates with different runtime data.
+Without grouping, one bug in a hot path produces thousands of raw exceptions that differ only in runtime data: another user ID, another memory address, another server. Grouping reduces that stream to one issue with an occurrence count, which keeps two things useful:
+
+- **The issues list stays readable.** One row per root cause instead of pages of near-duplicates, so the list ranks real problems rather than repetitions of the same one.
+- **Alerts stay consistent.** A [New Issue](/learn/alerts#new-issue) rule fires once per group, not once per occurrence, and [Error Regression](/learn/alerts#error-regression) can tell that a previously resolved error has genuinely returned. If grouping were unstable, every alert rule would either flood you or stay silent.
+
+### How the Hash Is Computed
+
+Before hashing, Traceway normalizes the stack trace so values that vary between occurrences of the same bug never affect the hash:
+
+| Normalization | Effect |
+|---------------|--------|
+| Error message | Only the error type is kept (`TimeoutError`, `*net.OpError`). The message text, which often embeds user data, is dropped, including the messages on JVM `Caused by:` lines. The type has to be letters, digits, dots and underscores, so a PHP class written with backslashes (`App\Exception\Foo`) is not recognised and keeps its message in the hash. |
+| Runtime values | Hex addresses, UUIDs, IP addresses and ports, email addresses, goroutine numbers, and long numbers (epoch timestamps, numeric IDs) are replaced with placeholders. |
+| File locations | Absolute paths collapse to `filename:line`, URL origins are stripped from browser frames, and `@v1.2.3` module version suffixes are removed so a dependency bump does not split a group. |
+| JVM frames | Line numbers inside `(File.java:123)` are dropped, and `... 12 more` becomes `... more`. |
+| Column numbers | Dropped from frames that end in `:line:col`, unless the line number is 1. Minified bundles put everything on line 1, and the column is the only thing distinguishing frames there. Frames that carry the position inside brackets, such as Dart `(main.dart:20:3)`, keep the column. |
+| Resolved function names | JavaScript function-name lines are collapsed to `<fn>`, so better JS name resolution alone does not re-bucket an issue. Function and method names in other formats, such as Dart, iOS and JVM frames, are part of the hash. Uploading debug info for the first time also rewrites each frame's file, line and column, so occurrences from before the upload keep their old hash and later ones form a new issue. |
+| Whitespace | Runs of spaces and blank lines are collapsed. |
+
+The normalized trace is hashed with SHA-256 and truncated to 16 characters.
+
+### What Stays Together, What Splits
+
+The same logical error keeps the same hash across servers, environments, app versions, and users. A new hash (and therefore a new issue and a New Issue alert) appears when the failure itself changes: a different error type, or a different code path with different frames. Line numbers are part of the hash for most languages, so a refactor that moves code within a file can legitimately re-group an error after a deploy. JVM frames are the exception. Their line numbers are removed, so moving Java, Kotlin or Scala code inside a file keeps the same issue.
+
+### Messages
+
+Captured messages (strings sent through `CaptureMessage`, without an exception) skip stack trace normalization and group by their exact text. Keep message text stable and put variable data in [attributes](/learn/traces), otherwise every occurrence becomes its own issue:
+
+```go
+// One issue, one alert, with the order in scope
+scope.SetTag("order_id", orderID)
+traceway.CaptureMessage("payment provider unreachable")
+
+// A new issue and a new alert for every order
+traceway.CaptureMessage(fmt.Sprintf("payment provider unreachable for order %d", orderID))
+```
 
 ## Issue Lifecycle
 
-1. **Active** — When an issue first occurs
-2. **Archived** — Marked as resolved by you (hidden from the default view)
-3. **Reopened** — An archived issue that occurred again (regression detected)
+1. **Active**: When an issue first occurs
+2. **Archived**: Marked as resolved by you (hidden from the default view)
+3. **Reopened**: An archived issue that occurred again (regression detected)
 
 ## Attributes on Issues
 
-Issues carry their own attributes — the key-value metadata that was in scope when the exception occurred. If the issue is linked to a trace, it inherits the trace's attributes.
+Issues carry their own attributes: the key-value metadata that was in scope when the exception occurred. If the issue is linked to a trace, it inherits the trace's attributes.
 
 When error recording flags are enabled in middleware, additional context can be attached (configurable per client library):
 

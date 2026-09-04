@@ -41,9 +41,9 @@ type AcceptInvitationRequest struct {
 }
 
 type InvitationInfoResponse struct {
-	Email           string `json:"email"`
+	Email            string `json:"email"`
 	OrganizationName string `json:"organizationName"`
-	InviterName     string `json:"inviterName"`
-	ExistsAsUser    bool   `json:"existsAsUser"`
-	Role            string `json:"role"`
+	InviterName      string `json:"inviterName"`
+	ExistsAsUser     bool   `json:"existsAsUser"`
+	Role             string `json:"role"`
 }

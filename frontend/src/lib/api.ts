@@ -1,78 +1,121 @@
 import { authState } from './state/auth.svelte';
+import { projectsState } from './state/projects.svelte';
+import { gotoHref } from './utils/navigation';
 import { toast } from 'svelte-sonner';
 
 const BASE_URL = '/api';
 
 interface RequestOptions {
-    projectId?: string;
-    skipProjectId?: boolean;
+	projectId?: string;
+	skipProjectId?: boolean;
 }
 
+let recovering = false;
+let staleProjectNotified = '';
+
 async function request(method: string, endpoint: string, data?: unknown, options?: RequestOptions) {
-    const currentToken = authState.token;
-    const headers: Record<string, string> = {
-        'Content-Type': 'application/json'
-    };
+	const token = authState.token;
+	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+	if (token) {
+		headers['Authorization'] = `Bearer ${token}`;
+	}
 
-    if (currentToken) {
-        headers['Authorization'] = `Bearer ${currentToken}`;
-    }
+	let url = `${BASE_URL}${endpoint}`;
+	if (options?.projectId && !options?.skipProjectId) {
+		url += `${endpoint.includes('?') ? '&' : '?'}projectId=${options.projectId}`;
+	}
 
-    const config: RequestInit = {
-        method,
-        headers,
-    };
+	const response = await fetch(url, {
+		method,
+		headers,
+		body: data ? JSON.stringify(data) : undefined
+	});
 
-    if (data) {
-        config.body = JSON.stringify(data);
-    }
+	if (authState.token !== token) {
+		throw Object.assign(new Error('Session changed'), { status: 401 });
+	}
 
-    // Add projectId as query parameter if provided
-    let url = `${BASE_URL}${endpoint}`;
-    if (options?.projectId && !options?.skipProjectId) {
-        const separator = endpoint.includes('?') ? '&' : '?';
-        url = `${url}${separator}projectId=${options.projectId}`;
-    }
+	if (response.status === 401) {
+		authState.logout();
+		throw Object.assign(new Error('Unauthorized'), { status: 401 });
+	}
 
-    const response = await fetch(url, config);
+	if (response.status === 403) {
+		const body = await response.json().catch(() => ({}));
+		const message =
+			body.error ||
+			(method === 'GET' ? 'Forbidden' : "You don't have permission to perform this action");
 
-    if (response.status === 401) {
-        authState.logout();
-        window.location.href = '/login';
-        throw new Error('Unauthorized');
-    }
+		if (!recovering) {
+			recovering = true;
+			try {
+				const requestedProjectId = new URL(url, window.location.origin).searchParams.get(
+					'projectId'
+				);
+				const bundle = requestedProjectId
+					? await request('GET', '/me/login-bundle').catch(() => null)
+					: null;
+				if (bundle) {
+					authState.setOrganizations(bundle.organizations ?? []);
+					projectsState.setProjects(bundle.projects ?? []);
+				}
 
-    if (response.status === 403) {
-        const currentPath = window.location.pathname;
-        if (currentPath === '/' || currentPath === '') {
-            authState.logout();
-            window.location.href = '/login';
-        } else {
-            toast.warning("You don't have permission to access that feature", { position: 'top-center' });
-            window.location.href = '/';
-        }
-        throw new Error('Forbidden');
-    }
+				if (authState.token === token) {
+					const staleProject =
+						bundle &&
+						requestedProjectId &&
+						!projectsState.projects.some((project) => project.id === requestedProjectId);
 
-    if (response.status === 422) {
-        const body = await response.json().catch(() => ({}));
-        const error = new Error(body.error || 'Validation failed') as Error & { status: number };
-        error.status = 422;
-        throw error;
-    }
+					if (staleProject) {
+						if (staleProjectNotified !== requestedProjectId) {
+							staleProjectNotified = requestedProjectId;
+							toast.warning('That project is no longer available');
+						}
+						const current = new URL(window.location.href);
+						if (
+							current.searchParams.get('projectId') === requestedProjectId &&
+							projectsState.currentProjectId
+						) {
+							current.searchParams.set('projectId', projectsState.currentProjectId);
+							await gotoHref(current.pathname + current.search, { replaceState: true });
+						}
+					} else if (method !== 'GET') {
+						toast.error(message);
+					} else {
+						toast.warning("You don't have permission to access that feature");
+						if (window.location.pathname !== '/') {
+							await gotoHref('/', { replaceState: true });
+						}
+					}
+				}
+			} finally {
+				recovering = false;
+			}
+		}
 
-    if (!response.ok) {
-        const error = new Error(`API Error: ${response.statusText}`) as Error & { status: number };
-        error.status = response.status;
-        throw error;
-    }
+		throw Object.assign(new Error(message), { status: 403, body });
+	}
 
-    return response.json();
+	if (response.status === 422) {
+		const body = await response.json().catch(() => ({}));
+		throw Object.assign(new Error(body.error || 'Validation failed'), { status: 422, body });
+	}
+
+	if (!response.ok) {
+		throw Object.assign(new Error(`API Error: ${response.statusText}`), {
+			status: response.status
+		});
+	}
+
+	return response.json();
 }
 
 export const api = {
-    get: (endpoint: string, options?: RequestOptions) => request('GET', endpoint, undefined, options),
-    post: (endpoint: string, data: unknown, options?: RequestOptions) => request('POST', endpoint, data, options),
-    put: (endpoint: string, data: unknown, options?: RequestOptions) => request('PUT', endpoint, data, options),
-    delete: (endpoint: string, options?: RequestOptions, data?: unknown) => request('DELETE', endpoint, data, options)
+	get: (endpoint: string, options?: RequestOptions) => request('GET', endpoint, undefined, options),
+	post: (endpoint: string, data: unknown, options?: RequestOptions) =>
+		request('POST', endpoint, data, options),
+	put: (endpoint: string, data: unknown, options?: RequestOptions) =>
+		request('PUT', endpoint, data, options),
+	delete: (endpoint: string, options?: RequestOptions, data?: unknown) =>
+		request('DELETE', endpoint, data, options)
 };

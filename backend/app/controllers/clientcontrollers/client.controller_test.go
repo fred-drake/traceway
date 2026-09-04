@@ -50,6 +50,40 @@ func TestComputeExceptionHash_Java(t *testing.T) {
 	}
 }
 
+func TestComputeExceptionHash_JsFunctionNames(t *testing.T) {
+	stackA := "Error: Test error\nanonymous()\n    ../src/app.js:3:30\nbar()\n    ../src/bar.js:4:3"
+	stackB := "Error: Test error\nbuttonCallback()\n    ../src/app.js:3:30\nmodule.exports()\n    ../src/bar.js:4:3"
+	if ComputeExceptionHash(stackA, false) != ComputeExceptionHash(stackB, false) {
+		t.Error("same locations with different resolved function names should have the same hash")
+	}
+
+	stackC := "Error: Test error\nanonymous()\n    ../src/app.js:3:30"
+	stackD := "Error: Test error\nanonymous()\n    ../src/other.js:7:12"
+	if ComputeExceptionHash(stackC, false) == ComputeExceptionHash(stackD, false) {
+		t.Error("different locations should have different hashes")
+	}
+
+	stackE := "Error: Test error\nanonymous()\n    bundle.min.js:1:48211"
+	stackF := "Error: Test error\nanonymous()\n    bundle.min.js:1:91567"
+	if ComputeExceptionHash(stackE, false) == ComputeExceptionHash(stackF, false) {
+		t.Error("different columns in minified frames should have different hashes")
+	}
+
+	indentedA := "Error: Test error\n    anonymous()\n    ../src/app.js:3:30"
+	indentedB := "Error: Test error\n    buttonCallback()\n    ../src/app.js:3:30"
+	if ComputeExceptionHash(indentedA, false) != ComputeExceptionHash(indentedB, false) {
+		t.Error("indented name lines should also be collapsed")
+	}
+}
+
+func TestComputeExceptionHash_JsFnCollapseDoesNotTouchGo(t *testing.T) {
+	goStackA := "runtime error: index out of range\nmain.main()\n\t/app/main.go:10 +0x20"
+	goStackB := "runtime error: index out of range\nmain.other()\n\t/app/main.go:10 +0x20"
+	if ComputeExceptionHash(goStackA, false) == ComputeExceptionHash(goStackB, false) {
+		t.Error("Go function-name lines must not be collapsed: tab-indented file lines are not JS frames")
+	}
+}
+
 func TestIsEmptyRaw(t *testing.T) {
 	cases := []struct {
 		name string
@@ -72,5 +106,35 @@ func TestIsEmptyRaw(t *testing.T) {
 				t.Fatalf("isEmptyRaw(%q) = %v, want %v", string(c.in), got, c.want)
 			}
 		})
+	}
+}
+
+func TestComputeExceptionHash_DropsColumnsBeyondLineOne(t *testing.T) {
+	resolvedChrome := "TypeError: boom\nassertValid()\n    ../../src/pricing.ts:23:11\napplyDiscount()\n    ../../src/pricing.ts:17:3"
+	resolvedWebkit := "TypeError: boom\nassertValid()\n    ../../src/pricing.ts:23:15\napplyDiscount()\n    ../../src/pricing.ts:17:9"
+	if ComputeExceptionHash(resolvedChrome, false) != ComputeExceptionHash(resolvedWebkit, false) {
+		t.Error("resolved frames with engine-specific columns must hash identically")
+	}
+
+	minifiedA := "TypeError: boom\nfn()\n    app.min.js:1:730"
+	minifiedB := "TypeError: boom\nfn()\n    app.min.js:1:999"
+	if ComputeExceptionHash(minifiedA, false) == ComputeExceptionHash(minifiedB, false) {
+		t.Error("line-1 minified frames must keep the column as disambiguator")
+	}
+}
+
+func TestComputeExceptionHash_GoTraceUnaffectedByJsNormalizers(t *testing.T) {
+	goTrace := "runtime error: invalid memory address or nil pointer dereference\nmain.handleOrder(0x0)\n\t/srv/app/internal/orders/handler.go:42 +0x1b\nmain.main()\n\t/srv/app/main.go:18 +0x2f\ngoroutine 17 [running]:"
+	if urlOriginRe.MatchString(goTrace) {
+		t.Error("urlOriginRe must not match Go traces")
+	}
+	if laterLineColRe.MatchString(goTrace) {
+		t.Error("laterLineColRe must not match Go traces, they have no :line:col suffix")
+	}
+	if jsFuncLineRe.MatchString(goTrace) {
+		t.Error("jsFuncLineRe must not match tab-indented Go traces")
+	}
+	if ComputeExceptionHash(goTrace, false) != "5fa84c6186649978" {
+		t.Errorf("Go trace hash drifted: %s (update only if grouping intentionally changed)", ComputeExceptionHash(goTrace, false))
 	}
 }

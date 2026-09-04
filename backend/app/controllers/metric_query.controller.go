@@ -1,21 +1,95 @@
 package controllers
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/tracewayapp/traceway/backend/app/db"
 	"github.com/tracewayapp/traceway/backend/app/middleware"
 	"github.com/tracewayapp/traceway/backend/app/models"
-	"github.com/tracewayapp/traceway/backend/app/repositories"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry"
+	"github.com/tracewayapp/traceway/backend/app/repositories/telemetry/shared"
+	"github.com/tracewayapp/traceway/backend/app/repositories/transactional"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	traceway "go.tracewayapp.com"
 )
 
 type metricQueryController struct{}
+
+const (
+	metricQueryMaxQueries         = 50
+	metricQueryMaxBuckets         = shared.MaxTimeSeriesBuckets
+	metricQueryMaxGroups          = 200
+	metricQueryMaxRange           = 731 * 24 * time.Hour
+	metricQueryMaxTagFilters      = 20
+	metricQueryTimeout            = 30 * time.Second
+	metricQueryMaxIntervalMinutes = 366 * 24 * 60
+)
+
+func minIntervalMinutes(rangeSeconds, maxBuckets int) int {
+	if maxBuckets < 2 {
+		maxBuckets = 2
+	}
+	per := 60 * (maxBuckets - 1)
+	iv := (rangeSeconds + per - 1) / per
+	if iv < 1 {
+		iv = 1
+	}
+	return iv
+}
+
+func validateMetricQuery(req *MetricQueryRequest) string {
+	if len(req.Queries) > metricQueryMaxQueries {
+		return fmt.Sprintf("a maximum of %d queries can be requested at once", metricQueryMaxQueries)
+	}
+	if msg := validateMetricRange(req.From, req.To); msg != "" {
+		return msg
+	}
+	for _, q := range req.Queries {
+		if len(q.TagFilters) > metricQueryMaxTagFilters {
+			return fmt.Sprintf("a maximum of %d tag filters can be applied per query", metricQueryMaxTagFilters)
+		}
+	}
+
+	if req.IntervalMinutes <= 0 {
+		req.IntervalMinutes = calculateIntervalMinutes(req.To.Sub(req.From))
+	}
+	if req.IntervalMinutes > metricQueryMaxIntervalMinutes {
+		return fmt.Sprintf("intervalMinutes must be at most %d", metricQueryMaxIntervalMinutes)
+	}
+	if minInterval := minIntervalMinutes(int(req.To.Sub(req.From).Seconds()), metricQueryMaxBuckets); req.IntervalMinutes < minInterval {
+		req.IntervalMinutes = minInterval
+	}
+	return ""
+}
+
+func validateMetricRange(from, to time.Time) string {
+	if to.Before(from) {
+		return "to must not be before from"
+	}
+	if to.Sub(from) > metricQueryMaxRange {
+		return fmt.Sprintf("the time range must be at most %d days", int(metricQueryMaxRange.Hours()/24))
+	}
+	return ""
+}
+
+func trimGroupSeries(series map[string][]models.TimeSeriesPoint) bool {
+	truncated := false
+	for k, points := range series {
+		if points == nil {
+			delete(series, k)
+			truncated = true
+		}
+	}
+	return truncated
+}
 
 type MetricQueryRequest struct {
 	Queries         []MetricQueryItem `json:"queries" binding:"required,min=1"`
@@ -32,13 +106,15 @@ type MetricQueryItem struct {
 }
 
 type MetricQueryResponse struct {
-	Results []MetricQueryResult `json:"results"`
+	Results         []MetricQueryResult `json:"results"`
+	IntervalMinutes int                 `json:"intervalMinutes"`
 }
 
 type MetricQueryResult struct {
-	Name   string                              `json:"name"`
-	Unit   string                              `json:"unit"`
-	Series map[string][]models.TimeSeriesPoint `json:"series"`
+	Name            string                              `json:"name"`
+	Unit            string                              `json:"unit"`
+	Series          map[string][]models.TimeSeriesPoint `json:"series"`
+	TruncatedGroups bool                                `json:"truncatedGroups,omitempty"`
 }
 
 func (c *metricQueryController) Query(ctx *gin.Context) {
@@ -48,19 +124,24 @@ func (c *metricQueryController) Query(ctx *gin.Context) {
 		return
 	}
 
+	limitJSONBody(ctx)
+
 	var req MetricQueryRequest
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
+		return
+	}
+	if msg := validateMetricQuery(&req); msg != "" {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": msg})
 		return
 	}
 
-	if req.IntervalMinutes <= 0 {
-		req.IntervalMinutes = calculateIntervalMinutes(req.To.Sub(req.From))
-	}
+	queryCtx, cancel := context.WithTimeout(ctx.Request.Context(), metricQueryTimeout)
+	defer cancel()
 
 	unitMap := make(map[string]string)
 	registry, regErr := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.MetricRegistry, error) {
-		return repositories.MetricRegistryRepository.FindByProject(tx, projectId)
+		return transactional.MetricRegistryRepository.FindByProject(tx, projectId)
 	})
 	if regErr != nil {
 		traceway.CaptureException(fmt.Errorf("failed to load metric registry for query: %w", regErr))
@@ -86,42 +167,46 @@ func (c *metricQueryController) Query(ctx *gin.Context) {
 			spanName += fmt.Sprintf(" filters=%d", len(q.TagFilters))
 		}
 		span := traceway.StartSpan(ctx, spanName)
-		series, err := repositories.MetricPointRepository.QueryTimeSeries(
-			ctx, projectId, q.Name, req.From, req.To,
-			req.IntervalMinutes, agg, q.TagFilters, q.GroupBy,
+		series, err := telemetry.MetricPointRepository.QueryTimeSeries(
+			queryCtx, projectId, q.Name, req.From, req.To,
+			req.IntervalMinutes, agg, q.TagFilters, q.GroupBy, metricQueryMaxGroups,
 		)
 		span.End()
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(queryCtx.Err(), context.DeadlineExceeded) {
+				ctx.JSON(http.StatusGatewayTimeout, gin.H{"error": fmt.Sprintf("metric query timed out after %s; narrow the time range or send fewer queries", metricQueryTimeout)})
+				return
+			}
 			ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to query metric %s: %w", q.Name, err))
 			return
 		}
+		truncated := trimGroupSeries(series)
 
-		resultUnit := unitMap[q.Name]
+		resultUnit := rateUnit(agg, unitMap[q.Name])
 		if agg == "count" {
 			resultUnit = "count"
 		}
 
 		results = append(results, MetricQueryResult{
-			Name:   q.Name,
-			Unit:   resultUnit,
-			Series: series,
+			Name:            q.Name,
+			Unit:            resultUnit,
+			Series:          series,
+			TruncatedGroups: truncated,
 		})
 	}
 
-	ctx.JSON(http.StatusOK, MetricQueryResponse{Results: results})
+	ctx.JSON(http.StatusOK, MetricQueryResponse{Results: results, IntervalMinutes: req.IntervalMinutes})
 }
 
 type DiscoverResponse struct {
 	Metrics []models.DiscoveredMetric `json:"metrics"`
 }
 
-func (c *metricQueryController) Discover(ctx *gin.Context) {
-	projectId, err := middleware.GetProjectId(ctx)
-	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("RequireProjectAccess middleware must be applied: %w", err))
-		return
-	}
+type DiscoverInstancesResponse struct {
+	Instances []string `json:"instances"`
+}
 
+func parseMetricDiscoveryRange(ctx *gin.Context) (time.Time, time.Time, string) {
 	from := time.Now().AddDate(0, 0, -7)
 	to := time.Now()
 
@@ -136,8 +221,24 @@ func (c *metricQueryController) Discover(ctx *gin.Context) {
 		}
 	}
 
+	return from, to, validateMetricRange(from, to)
+}
+
+func (c *metricQueryController) Discover(ctx *gin.Context) {
+	projectId, err := middleware.GetProjectId(ctx)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("RequireProjectAccess middleware must be applied: %w", err))
+		return
+	}
+
+	from, to, rangeMsg := parseMetricDiscoveryRange(ctx)
+	if rangeMsg != "" {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": rangeMsg})
+		return
+	}
+
 	span := traceway.StartSpan(ctx, "discover metrics")
-	discovered, err := repositories.MetricPointRepository.DiscoverMetrics(ctx, projectId, from, to)
+	discovered, err := telemetry.MetricPointRepository.DiscoverMetrics(ctx, projectId, from, to)
 	span.End()
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to discover metrics: %w", err))
@@ -145,7 +246,7 @@ func (c *metricQueryController) Discover(ctx *gin.Context) {
 	}
 
 	registry, regErr := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.MetricRegistry, error) {
-		return repositories.MetricRegistryRepository.FindByProject(tx, projectId)
+		return transactional.MetricRegistryRepository.FindByProject(tx, projectId)
 	})
 
 	if regErr != nil {
@@ -167,6 +268,112 @@ func (c *metricQueryController) Discover(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, DiscoverResponse{Metrics: discovered})
 }
 
+func (c *metricQueryController) DiscoverInstances(ctx *gin.Context) {
+	projectId, err := middleware.GetProjectId(ctx)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("RequireProjectAccess middleware must be applied: %w", err))
+		return
+	}
+
+	from, to, rangeMsg := parseMetricDiscoveryRange(ctx)
+	if rangeMsg != "" {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": rangeMsg})
+		return
+	}
+	span := traceway.StartSpan(ctx, "discover instances")
+	instances, err := telemetry.MetricPointRepository.GetDistinctServers(ctx, projectId, from, to)
+	span.End()
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to discover instances: %w", err))
+		return
+	}
+	if instances == nil {
+		instances = []string{}
+	}
+
+	ctx.JSON(http.StatusOK, DiscoverInstancesResponse{Instances: instances})
+}
+
+const discoverOrgMaxProjects = 25
+
+type OrgDiscoveredMetric struct {
+	Name       string      `json:"name"`
+	TagKeys    []string    `json:"tagKeys"`
+	MetricType string      `json:"metricType,omitempty"`
+	Unit       string      `json:"unit,omitempty"`
+	ProjectIds []uuid.UUID `json:"projectIds"`
+}
+
+func (c *metricQueryController) DiscoverOrg(ctx *gin.Context) {
+	organizationId, err := strconv.Atoi(ctx.Query("organizationId"))
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "organizationId query param is required"})
+		return
+	}
+
+	userId := middleware.GetUserId(ctx)
+	projects, err := db.ExecuteTransaction(func(tx *sql.Tx) ([]*models.Project, error) {
+		role, err := transactional.OrganizationRepository.GetUserRole(tx, organizationId, userId)
+		if err != nil {
+			return nil, err
+		}
+		if role == "" {
+			return nil, nil
+		}
+		return transactional.ProjectRepository.FindByOrganizationId(tx, organizationId)
+	})
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to list organization projects: %w", err))
+		return
+	}
+	if projects == nil {
+		ctx.JSON(http.StatusNotFound, gin.H{"error": "Organization not found"})
+		return
+	}
+	truncated := false
+	if len(projects) > discoverOrgMaxProjects {
+		projects = projects[:discoverOrgMaxProjects]
+		truncated = true
+	}
+
+	from := time.Now().AddDate(0, 0, -7)
+	to := time.Now()
+
+	merged := map[string]*OrgDiscoveredMetric{}
+	order := []string{}
+	for _, project := range projects {
+		span := traceway.StartSpan(ctx, fmt.Sprintf("discover metrics: project %s", project.Id))
+		discovered, err := telemetry.MetricPointRepository.DiscoverMetrics(ctx, project.Id, from, to)
+		span.End()
+		if err != nil {
+			traceway.CaptureException(fmt.Errorf("failed to discover metrics for project %s: %w", project.Id, err))
+			continue
+		}
+		for _, m := range discovered {
+			entry := merged[m.Name]
+			if entry == nil {
+				entry = &OrgDiscoveredMetric{Name: m.Name, TagKeys: m.TagKeys, MetricType: m.MetricType, Unit: m.Unit, ProjectIds: []uuid.UUID{}}
+				merged[m.Name] = entry
+				order = append(order, m.Name)
+			}
+			entry.ProjectIds = append(entry.ProjectIds, project.Id)
+			if entry.Unit == "" {
+				entry.Unit = m.Unit
+			}
+			if entry.MetricType == "" {
+				entry.MetricType = m.MetricType
+			}
+		}
+	}
+
+	metrics := make([]OrgDiscoveredMetric, 0, len(order))
+	for _, name := range order {
+		metrics = append(metrics, *merged[name])
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"metrics": metrics, "truncated": truncated})
+}
+
 func (c *metricQueryController) DiscoverTags(ctx *gin.Context) {
 	projectId, err := middleware.GetProjectId(ctx)
 	if err != nil {
@@ -185,7 +392,7 @@ func (c *metricQueryController) DiscoverTags(ctx *gin.Context) {
 	to := time.Now()
 
 	span := traceway.StartSpan(ctx, fmt.Sprintf("discover tag values: %s.%s", name, key))
-	values, err := repositories.MetricPointRepository.DiscoverTagValues(ctx, projectId, name, key, from, to)
+	values, err := telemetry.MetricPointRepository.DiscoverTagValues(ctx, projectId, name, key, from, to)
 	span.End()
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to discover tag values: %w", err))
@@ -209,7 +416,7 @@ func (c *metricQueryController) UpdateRegistry(ctx *gin.Context) {
 		Description string `json:"description"`
 	}
 	if err := ctx.ShouldBindJSON(&req); err != nil {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		middleware.RejectBindError(ctx, err, "Invalid request body")
 		return
 	}
 
@@ -219,7 +426,7 @@ func (c *metricQueryController) UpdateRegistry(ctx *gin.Context) {
 	}
 
 	updated, err := db.ExecuteTransaction(func(tx *sql.Tx) (*models.MetricRegistry, error) {
-		entry, err := repositories.MetricRegistryRepository.FindByProjectAndName(tx, projectId, req.Name)
+		entry, err := transactional.MetricRegistryRepository.FindByProjectAndName(tx, projectId, req.Name)
 		if err != nil {
 			return nil, err
 		}
@@ -233,7 +440,7 @@ func (c *metricQueryController) UpdateRegistry(ctx *gin.Context) {
 			entry.Unit = req.Unit
 		}
 		entry.Description = req.Description
-		if err := repositories.MetricRegistryRepository.Update(tx, entry); err != nil {
+		if err := transactional.MetricRegistryRepository.Update(tx, entry); err != nil {
 			return nil, err
 		}
 		return entry, nil
@@ -252,3 +459,16 @@ func (c *metricQueryController) UpdateRegistry(ctx *gin.Context) {
 }
 
 var MetricQueryController = metricQueryController{}
+
+func rateUnit(aggregation string, unit string) string {
+	if aggregation != "rate" {
+		return unit
+	}
+	switch unit {
+	case "s":
+		return "1"
+	case "":
+		return "count/s"
+	}
+	return unit + "/s"
+}

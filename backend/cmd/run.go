@@ -1,6 +1,18 @@
 package cmd
 
 import (
+	"context"
+	"fmt"
+	"io/fs"
+	"net"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/tracewayapp/traceway/backend/app/backfill"
 	"github.com/tracewayapp/traceway/backend/app/cache"
 	"github.com/tracewayapp/traceway/backend/app/chdb"
 	"github.com/tracewayapp/traceway/backend/app/config"
@@ -11,18 +23,17 @@ import (
 	"github.com/tracewayapp/traceway/backend/app/models"
 	"github.com/tracewayapp/traceway/backend/app/monitoring"
 	"github.com/tracewayapp/traceway/backend/app/notifications"
+	"github.com/tracewayapp/traceway/backend/app/oncall"
+	"github.com/tracewayapp/traceway/backend/app/outbox"
 	"github.com/tracewayapp/traceway/backend/app/recordings"
 	"github.com/tracewayapp/traceway/backend/app/retention"
 	"github.com/tracewayapp/traceway/backend/app/services"
+	"github.com/tracewayapp/traceway/backend/app/services/mcpmount"
+	"github.com/tracewayapp/traceway/backend/app/sourcemapbackfill"
 	"github.com/tracewayapp/traceway/backend/app/storage"
+	"github.com/tracewayapp/traceway/backend/app/symbolicator/sourcemap/scopes"
+	"github.com/tracewayapp/traceway/backend/app/synthetics"
 	"github.com/tracewayapp/traceway/backend/static"
-	"context"
-	"fmt"
-	"io/fs"
-	"net/http"
-	"os"
-	"strings"
-	"time"
 
 	"github.com/coreos/go-systemd/v22/daemon"
 	"github.com/gin-gonic/gin"
@@ -68,12 +79,25 @@ func Run(opts ...Option) {
 			config.LoggingEnabled = false
 		}
 
-		applyOAuthEnvOverrides(cfg)
+		applyEnvOverrides(cfg)
 	}
 	config.Init(cfg)
 
 	if err := services.InitJWT(); err != nil {
-		panic(fmt.Errorf("failed to initialize JWT: %w", err))
+		// A missing signing key is a configuration mistake, not a crash: print
+		// something actionable instead of burying the message under a panic
+		// stack trace. The standalone binary deliberately has no default -- a
+		// key committed to the repo would be identical in every clone.
+		fmt.Fprintln(os.Stderr, "FATAL: "+err.Error())
+		fmt.Fprintln(os.Stderr, "Generate one with: openssl rand -hex 32")
+		os.Exit(1)
+	}
+
+	trustedNets, proxyErr := trustedProxyNets(cfg.TrustedProxyList())
+	if proxyErr != nil {
+		fmt.Fprintln(os.Stderr, "FATAL: invalid TRUSTED_PROXIES: "+proxyErr.Error())
+		fmt.Fprintln(os.Stderr, "Use comma-separated IP addresses or CIDR ranges, for example 10.0.0.0/8,203.0.113.7")
+		os.Exit(1)
 	}
 
 	err := db.Init()
@@ -97,6 +121,13 @@ func Run(opts ...Option) {
 		panic(fmt.Errorf("migrations run failed: %w", err))
 	}
 
+	if err := backfill.RunDashboards(); err != nil {
+		panic(fmt.Errorf("dashboards backfill failed: %w", err))
+	}
+	if err := backfill.RunOtelAgentDashboardSources(); err != nil {
+		panic(fmt.Errorf("OTel agent dashboard backfill failed: %w", err))
+	}
+
 	if o != nil {
 		if err := seed(o); err != nil {
 			panic(fmt.Errorf("seeding failed: %w", err))
@@ -107,14 +138,38 @@ func Run(opts ...Option) {
 	if err := cache.ProjectCache.Init(ctx); err != nil {
 		panic(fmt.Errorf("projects cache could not be initialized: %w", err))
 	}
-	cache.InitSourceMapCache(200, 500*1024*1024)
+	services.InitSourceMapCache(
+		parsePositiveInt(cfg.SourceMapCacheMaxEntries, 200),
+		int64(parsePositiveInt(cfg.SourceMapCacheMaxBytesMB, 500))*1024*1024,
+	)
+	switch cfg.SourceMapCacheType {
+	case "", "memory":
+	case "disk":
+		dir := cfg.SourceMapDiskCachePath
+		if dir == "" {
+			dir = "./twcache"
+		}
+		maxBytes := int64(parsePositiveInt(cfg.SourceMapDiskCacheMaxMB, 2048)) * 1024 * 1024
+		if err := services.EnableSymbolicatorDiskCache(dir, maxBytes); err != nil {
+			panic(fmt.Errorf("source map disk cache init failed: %w", err))
+		}
+	default:
+		panic(fmt.Errorf("unknown SOURCEMAP_CACHE_TYPE: %s", cfg.SourceMapCacheType))
+	}
+	if cfg.SymbolicatorParser != "" {
+		if err := scopes.SetParser(cfg.SymbolicatorParser); err != nil {
+			panic(fmt.Errorf("symbolicator parser init failed: %w", err))
+		}
+	}
 
 	middleware.InitUseClientAuth()
 	middleware.InitUseAppAuth()
 	middleware.InitRequireWriteAccess()
 	middleware.InitRequireProjectAccess()
 	middleware.InitRequireAdminAccess()
+	middleware.InitRequireOrganizationAccess()
 	middleware.InitUseSourceMapAuth()
+	middleware.InitUseRunnerAuth()
 
 	services.InitEmail()
 	services.InitTurnstile()
@@ -124,9 +179,18 @@ func Run(opts ...Option) {
 		hook(ctx)
 	}
 
+	outbox.RegisterSender(notifications.AdapterSend)
+	outbox.RegisterTerminalHook(notifications.OnOutboxTerminal)
+	notifications.RegisterPageOpener(oncall.OpenPageFromDispatch)
+	notifications.RegisterPageResolver(oncall.AutoResolveByDedupKey)
+	synthetics.RegisterNotifier(notifications.OnCheckStateChange)
+	outbox.StartDrain(ctx)
+	oncall.StartEscalator(ctx)
 	notifications.StartEvaluator(ctx)
+	synthetics.Start(ctx)
 	retention.Start(ctx)
 	recordings.Start(ctx)
+	sourcemapbackfill.Start(ctx)
 
 	var router *gin.Engine
 	if o != nil && o.disableLogging {
@@ -136,12 +200,47 @@ func Run(opts ...Option) {
 		router = gin.Default()
 	}
 
+	router.Use(middleware.GuardBodyReads(middleware.DefaultBodyIdle, middleware.DefaultBodyTotal))
+
+	if err := configureClientIP(router, cfg); err != nil {
+		panic(fmt.Errorf("invalid TRUSTED_PROXIES: %w", err))
+	}
+	if cfg.TrustedProxyHeader == "" {
+		router.Use(warnOnUntrustedForwardedFor(trustedNets))
+	}
+	router.Use(middleware.SecurityHeaders)
+
 	if monitoringTracewayUrl := cfg.MonitoringTracewayURL; monitoringTracewayUrl != "" {
-		router.Use(tracewaygin.New(
+		twmw := tracewaygin.New(
 			monitoringTracewayUrl,
 			tracewaygin.WithOnErrorRecording(tracewaygin.RecordingQuery|tracewaygin.RecordingBody|tracewaygin.RecordingHeader|tracewaygin.RecordingUrl),
-		))
+		)
+
+		selfToken := monitoringTracewayUrl
+		if i := strings.IndexByte(selfToken, '@'); i >= 0 {
+			selfToken = selfToken[:i]
+		}
+		selfAuth := "Bearer " + selfToken
+
+		router.Use(func(c *gin.Context) {
+			if c.GetHeader("Authorization") == selfAuth {
+				c.Next()
+				return
+			}
+			// The runner poll long-polls for up to 25s; recording it would
+			// register as 25s endpoint samples and wreck self-monitoring p95.
+			if c.Request.URL.Path == "/api/runners/poll" {
+				c.Next()
+				return
+			}
+			twmw(c)
+		})
+
 		monitoring.StartClickHouseReporter(ctx)
+		monitoring.StartBackendReporter(ctx)
+		monitoring.StartTelemetryDBReporter(ctx)
+		monitoring.StartOutboxReporter(ctx)
+		monitoring.StartSyntheticsReporter(ctx)
 	}
 
 	router.GET("/health", func(c *gin.Context) {
@@ -154,6 +253,16 @@ func Run(opts ...Option) {
 	router.GET("/version", func(ctx *gin.Context) {
 		ctx.JSON(200, gin.H{"version": "0.0.1"})
 	})
+
+	wellKnown := []string{http.MethodGet, http.MethodOptions}
+	router.Match(wellKnown, "/.well-known/oauth-authorization-server", middleware.WellKnownCors, controllers.WellKnownController.AuthorizationServer)
+	router.Match(wellKnown, "/.well-known/oauth-protected-resource", middleware.WellKnownCors, controllers.WellKnownController.ProtectedResource)
+	router.Match(wellKnown, "/.well-known/oauth-protected-resource"+mcpmount.Path, middleware.WellKnownCors, controllers.WellKnownController.ProtectedResourceMCP)
+
+	mcpHandler := mcpmount.GinHandler(router, "0.0.1")
+	mcpMethods := []string{http.MethodGet, http.MethodPost, http.MethodDelete, http.MethodOptions}
+	router.Match(mcpMethods, mcpmount.Path, middleware.MCPCors, mcpHandler)
+	router.Match(mcpMethods, mcpmount.Path+"/", middleware.MCPCors, mcpHandler)
 
 	apiOnly := cfg.APIOnly == "true"
 
@@ -182,42 +291,176 @@ func Run(opts ...Option) {
 	if ports == "" {
 		ports = "80,8082"
 	}
-	portsList := strings.Split(ports, ",")
-	if len(portsList) == 0 {
-		panic(fmt.Errorf("ports env variable is invalid - no ports found"))
+
+	// Bind every port up front rather than inside the serving goroutines, so a
+	// failure is known before the process reports itself started. Individual
+	// failures are tolerated -- binding :80 as a non-root user is the ordinary
+	// local-development case -- but losing every port is fatal.
+	//
+	// Previously only the first entry was bound on this goroutine and panicked,
+	// while the rest panicked inside goroutines guarded by traceway.Recover(),
+	// which swallows the panic (and reports nothing at all when monitoring is
+	// unconfigured). That made the same failure either fatal or invisible
+	// depending on the order of PORTS.
+	var listeners []net.Listener
+	for _, port := range parsePorts(ports) {
+		addr := ":" + port
+		listener, err := net.Listen("tcp", addr)
+		if err != nil {
+			config.Logln("WARNING: not listening on " + addr + ": " + err.Error())
+			traceway.CaptureException(fmt.Errorf("could not listen on %s: %w", addr, err))
+			continue
+		}
+		listeners = append(listeners, listener)
 	}
 
-	if len(portsList) > 1 {
-		for i := 1; i < len(portsList); i++ {
-			if len(portsList[i]) == 0 {
-				continue
-			}
-			go func() {
-				defer traceway.Recover()
+	if len(listeners) == 0 {
+		panic(fmt.Errorf("could not listen on any port in PORTS=%q", ports))
+	}
 
-				port := ":" + portsList[i]
-				config.Logln("Starting server on " + port)
-				if err := router.Run(port); err != nil {
-					panic(fmt.Errorf("Error starting server on port %s: %v", port, err))
-				}
-			}()
-		}
+	for _, listener := range listeners[1:] {
+		go func(listener net.Listener) {
+			config.Logln("Starting server on " + listener.Addr().String())
+			serveHTTP(router, listener)
+		}(listener)
 	}
 
 	notifySystemd()
-	if err := router.Run(":" + portsList[0]); err != nil {
-		panic(fmt.Errorf("Error starting server on port %s: %v", portsList[0], err))
+	config.Logln("Starting server on " + listeners[0].Addr().String())
+	serveHTTP(router, listeners[0])
+}
+
+func parsePorts(ports string) []string {
+	var out []string
+	for _, port := range strings.Split(ports, ",") {
+		if port = strings.TrimSpace(port); port != "" {
+			out = append(out, port)
+		}
+	}
+	return out
+}
+
+func warnOnUntrustedForwardedFor(nets []*net.IPNet) gin.HandlerFunc {
+	detect := newUntrustedForwarderDetector(nets)
+	return func(c *gin.Context) {
+		if peer, first := detect(c); first {
+			config.Logf("X-Forwarded-For or X-Real-IP received from %s, which is not in TRUSTED_PROXIES. The header is ignored, so per-IP rate limits and session client IPs see that address instead of the real client. If %s is your proxy or CDN, add its range to TRUSTED_PROXIES.", peer, peer)
+		}
+		c.Next()
 	}
 }
 
-// applyOAuthEnvOverrides lets the dev-options path pick up OAuth/OIDC env vars
-// so embedded examples (e.g. devtesting-embedded) can be configured for SSO
-// testing without exposing every OIDC knob as a WithXxx option.
-func applyOAuthEnvOverrides(cfg *config.Cfg) {
+func newUntrustedForwarderDetector(nets []*net.IPNet) func(*gin.Context) (string, bool) {
+	var once sync.Once
+	return func(c *gin.Context) (string, bool) {
+		if c.GetHeader("X-Forwarded-For") == "" && c.GetHeader("X-Real-IP") == "" {
+			return "", false
+		}
+		peer := c.RemoteIP()
+		ip := net.ParseIP(peer)
+		if ip == nil || containsIP(nets, ip) {
+			return "", false
+		}
+		first := false
+		once.Do(func() { first = true })
+		return peer, first
+	}
+}
+
+func trustedProxyNets(proxies []string) ([]*net.IPNet, error) {
+	var nets []*net.IPNet
+	for _, p := range proxies {
+		if _, n, err := net.ParseCIDR(p); err == nil {
+			nets = append(nets, n)
+			continue
+		}
+		ip := net.ParseIP(p)
+		if ip == nil {
+			return nil, fmt.Errorf("%q is not an IP address or CIDR range", p)
+		}
+		bits := 32
+		if ip.To4() == nil {
+			bits = 128
+		}
+		nets = append(nets, &net.IPNet{IP: ip, Mask: net.CIDRMask(bits, bits)})
+	}
+	return nets, nil
+}
+
+func containsIP(nets []*net.IPNet, ip net.IP) bool {
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+const serverReadTimeout = time.Hour
+
+// serveHTTP takes an already-bound listener rather than an address: the ports
+// are bound up front so a bind failure is known before the process reports
+// itself started, which ListenAndServe cannot express. The timeouts are the
+// point of this helper and must survive that change -- gin's RunListener sets
+// none of them.
+func serveHTTP(router *gin.Engine, listener net.Listener) {
+	srv := &http.Server{
+		Handler:           router,
+		ReadHeaderTimeout: 15 * time.Second,
+		ReadTimeout:       serverReadTimeout,
+		IdleTimeout:       2 * time.Minute,
+	}
+	if err := srv.Serve(listener); err != nil {
+		panic(fmt.Errorf("server on %s stopped: %w", listener.Addr().String(), err))
+	}
+}
+
+func configureClientIP(router *gin.Engine, cfg *config.Cfg) error {
+	// Gin trusts X-Forwarded-For from any peer by default, which would let a
+	// direct client pick its own ClientIP() and rotate out of the per-IP limits.
+	if err := router.SetTrustedProxies(cfg.TrustedProxyList()); err != nil {
+		return err
+	}
+	// Taken verbatim as the client IP when present, bypassing the proxy list —
+	// only safe when every path to the backend runs through a proxy that
+	// overwrites the header (e.g. ingress-nginx X-Real-IP, CF-Connecting-IP).
+	router.TrustedPlatform = cfg.TrustedProxyHeader
+	return nil
+}
+
+// applyEnvOverrides forwards env vars to a config the embedded Run(opts...)
+// path built without LoadFromEnv; new Cfg fields belong in this table.
+func applyEnvOverrides(cfg *config.Cfg) {
 	for _, m := range []struct {
 		envVar string
 		dest   *string
 	}{
+		{"SMTP_ENABLED", &cfg.SMTPEnabled},
+		{"SMTP_HOST", &cfg.SMTPHost},
+		{"SMTP_PORT", &cfg.SMTPPort},
+		{"SMTP_USERNAME", &cfg.SMTPUsername},
+		{"SMTP_PASSWORD", &cfg.SMTPPassword},
+		{"SMTP_FROM", &cfg.SMTPFrom},
+		{"ONCALL_POLL_SECONDS", &cfg.OncallPollSeconds},
+		{"OUTBOX_POLL_SECONDS", &cfg.OutboxPollSeconds},
+		{"SYNTHETICS_POLL_SECONDS", &cfg.SyntheticsPollSeconds},
+		{"SYNTHETICS_BROWSER_MODE", &cfg.SyntheticsBrowserMode},
+		{"SYNTHETICS_BROWSER_SANDBOX", &cfg.SyntheticsBrowserSandbox},
+		{"SYNTHETICS_HTTP_CONCURRENCY", &cfg.SyntheticsHTTPConcurrency},
+		{"SYNTHETICS_BROWSER_CONCURRENCY", &cfg.SyntheticsBrowserConcurrency},
+		{"SYNTHETICS_ALLOW_PRIVATE_TARGETS", &cfg.SyntheticsAllowPrivateTargets},
+		{"SYNTHETICS_PLAYWRIGHT_DIR", &cfg.SyntheticsPlaywrightDir},
+		{"SYNTHETICS_SCREENSHOT_RETENTION_DAYS", &cfg.SyntheticsScreenshotRetentionDays},
+		{"SYNTHETICS_RUNNER_SECRET", &cfg.SyntheticsRunnerSecret},
+		{"HEALTH_DEEP_TOKEN", &cfg.HealthDeepToken},
+		{"TRUSTED_PROXIES", &cfg.TrustedProxies},
+		{"TRUSTED_PROXY_HEADER", &cfg.TrustedProxyHeader},
+		{"TWILIO_ACCOUNT_SID", &cfg.TwilioAccountSID},
+		{"TWILIO_AUTH_TOKEN", &cfg.TwilioAuthToken},
+		{"TWILIO_FROM_NUMBER", &cfg.TwilioFromNumber},
+		{"TWILIO_MESSAGING_SERVICE_SID", &cfg.TwilioMessagingServiceSID},
+		{"ALLOW_PRIVATE_NOTIFICATION_TARGETS", &cfg.AllowPrivateNotificationTargets},
+		{"REPORT_MAX_BODY_MB", &cfg.ReportMaxBodyMB},
 		{"OAUTH_SESSION_SECRET", &cfg.OAuthSessionSecret},
 		{"GOOGLE_CLIENT_ID", &cfg.GoogleClientID},
 		{"GOOGLE_CLIENT_SECRET", &cfg.GoogleClientSecret},
@@ -236,11 +479,30 @@ func applyOAuthEnvOverrides(cfg *config.Cfg) {
 		{"OIDC_TOKEN_URL", &cfg.OIDCTokenURL},
 		{"OIDC_USER_INFO_URL", &cfg.OIDCUserInfoURL},
 		{"DISABLE_PASSWORD_LOGIN", &cfg.DisablePasswordLogin},
+		{"NOTIFICATION_POLL_SECONDS", &cfg.NotificationPollSeconds},
+		{"SOURCEMAP_CACHE_MAX_ENTRIES", &cfg.SourceMapCacheMaxEntries},
+		{"SOURCEMAP_CACHE_MAX_BYTES_MB", &cfg.SourceMapCacheMaxBytesMB},
+		{"SOURCEMAP_CACHE_TYPE", &cfg.SourceMapCacheType},
+		{"SOURCEMAP_DISK_CACHE_PATH", &cfg.SourceMapDiskCachePath},
+		{"SOURCEMAP_DISK_CACHE_MAX_MB", &cfg.SourceMapDiskCacheMaxMB},
+		{"SYMBOLICATOR_PARSER", &cfg.SymbolicatorParser},
 	} {
 		if v := os.Getenv(m.envVar); v != "" {
 			*m.dest = v
 		}
 	}
+}
+
+func parsePositiveInt(s string, def int) int {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return def
+	}
+	v, err := strconv.Atoi(s)
+	if err != nil || v < 1 {
+		return def
+	}
+	return v
 }
 
 func notifySystemd() {

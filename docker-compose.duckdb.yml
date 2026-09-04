@@ -1,0 +1,47 @@
+services:
+  traceway:
+    build:
+      context: .
+      dockerfile: Dockerfile.duckdb
+    ports:
+      - "80:80"
+    environment:
+      JWT_SECRET: "change-this-to-a-secure-secret-at-least-32-chars"
+      # APP_BASE_URL: "https://traceway.example.com"
+      # Proxies whose X-Forwarded-For is trusted for the real client IP (the
+      # per-IP rate limits key on it). Only loopback is trusted by default, so
+      # list every hop in front of Traceway: a proxy container, an ingress, a CDN.
+      # TRUSTED_PROXIES: "172.18.0.0/16"
+      # TRUSTED_PROXY_HEADER: "X-Real-IP"
+
+      # DuckDB sizes its memory budget from host RAM, not the container limit.
+      # On any memory-capped deployment set this to roughly half the
+      # container's RAM or the backend gets OOM-killed under ingest.
+      DUCKDB_MEMORY_LIMIT: "2GB"
+      # DUCKDB_THREADS: "4"
+      # Raise under sustained ingest to reduce WAL checkpoint stalls; costs a
+      # larger WAL and longer restart replay. DuckDB default is 16MB.
+      # DUCKDB_CHECKPOINT_THRESHOLD: "256MB"
+
+      # Optional retention knobs. Defaults are 30 days; set to "0" to disable.
+      # SQLITE_RETENTION_DAYS prunes telemetry rows (DuckDB telemetry included);
+      # SESSION_RECORDING_RETENTION_DAYS cleans on-disk recordings under
+      # STORAGE_PATH/recordings/. Both run hourly and on startup. The recording
+      # cleanup has no effect when STORAGE_TYPE=s3.
+      # SQLITE_RETENTION_DAYS: "30"
+      # SESSION_RECORDING_RETENTION_DAYS: "30"
+
+      # Optional: store blobs (source maps, session recordings, AI traces) in S3
+      # instead of the local /data/storage folder.
+      # STORAGE_TYPE: "s3"
+      # S3_BUCKET: "your-bucket"
+      # S3_REGION: "us-east-1"
+      # S3_ACCESS_KEY: "your-access-key"
+      # S3_SECRET_KEY: "your-secret-key"
+      # S3_ENDPOINT: "https://s3.example.com"  # for MinIO / R2 / Spaces
+    volumes:
+      - traceway-data:/data
+    restart: unless-stopped
+
+volumes:
+  traceway-data:

@@ -1,0 +1,219 @@
+name: benchmark-processor
+
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        description: 'Symbolication language: js (5 impls incl. Honeycomb), dart (traceway-dart-mem/disk), ios (honeycomb-ios + traceway-ios-mem/disk), android (honeycomb-android + traceway-android-mem/disk), or both (js+dart)'
+        required: true
+        default: 'js'
+        type: choice
+        options:
+          - js
+          - dart
+          - ios
+          - android
+          - both
+      scenarios:
+        description: 'Scenarios to run'
+        required: true
+        default: 'hot churn oom'
+      oom_entries:
+        description: 'Corpus entries for the oom scenario'
+        required: true
+        default: '4096'
+      oom_pad_kb:
+        description: 'Bundle padding KB per oom corpus entry'
+        required: true
+        default: '1024'
+      oom_map_pad_kb:
+        description: 'sourcesContent padding KB per oom corpus map'
+        required: true
+        default: '1024'
+      oom_mappings_pad_kb:
+        description: 'VLQ mappings padding KB per oom corpus map'
+        required: true
+        default: '1024'
+      oom_duration:
+        description: 'Max duration of the oom load step'
+        required: true
+        default: '30m'
+      oom_sut_type:
+        description: 'Hetzner server type for the oom scenario'
+        required: true
+        default: 'ccx13'
+      sut_type:
+        description: 'Hetzner server type for the collector under test'
+        required: true
+        default: 'ccx33'
+      ldg_type:
+        description: 'Hetzner server type for the load generator (shared vCPU)'
+        required: true
+        default: 'cpx42'
+      connections:
+        description: 'Loadgen concurrency ramp'
+        required: true
+        default: '8,16,32,64,128,256'
+      step_duration:
+        description: 'Duration per concurrency step'
+        required: true
+        default: '60s'
+      churn_entries:
+        description: 'Corpus entries for the churn scenario'
+        required: true
+        default: '512'
+      pad_kb:
+        description: 'Bundle padding KB per corpus entry'
+        required: true
+        default: '256'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hetzner-bench-processor
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+      - name: Build oxc shim
+        run: bash scripts/build-oxc-shim.sh
+      - name: Build traceway collector (oxc)
+        working-directory: benchmarks/processor
+        run: |
+          GOBIN=$PWD/bin go install go.opentelemetry.io/collector/cmd/builder@v0.154.0
+          ./bin/builder --config manifest-traceway.yaml --skip-compilation
+          cd build-traceway && CGO_ENABLED=1 go build -tags oxc -o otelcol-bench-traceway .
+      - name: Build honeycomb collector
+        if: inputs.language == 'js' || inputs.language == 'both' || inputs.language == 'ios' || inputs.language == 'android'
+        working-directory: benchmarks/processor
+        run: |
+          GOBIN=$PWD/bin go install go.opentelemetry.io/collector/cmd/builder@v0.143.0
+          CGO_ENABLED=1 ./bin/builder --config manifest-honeycomb.yaml
+      - name: Build drain
+        working-directory: benchmarks/processor/drain
+        run: cargo build --release
+      - name: Build loadgen and corpusgen
+        working-directory: benchmarks/processor
+        run: |
+          cd loadgen && go mod tidy && go build -o loadgen . && cd ..
+          cd corpusgen && go build -o corpusgen .
+      - name: Build node-app bundle
+        if: inputs.language == 'js' || inputs.language == 'both'
+        working-directory: testing/symbolication/node-app
+        run: npm install && npm run build
+      - name: Assemble artifacts
+        working-directory: benchmarks/processor
+        run: |
+          mkdir -p artifacts
+          cp build-traceway/otelcol-bench-traceway artifacts/
+          cp drain/target/release/drain artifacts/
+          cp loadgen/loadgen corpusgen/corpusgen artifacts/
+          cp config-traceway.yaml rss-sampler.sh artifacts/
+          cp -r seeds artifacts/
+          if [ -f build-honeycomb/otelcol-bench-honeycomb ]; then
+            cp build-honeycomb/otelcol-bench-honeycomb artifacts/
+            cp "$(find ~/go/pkg/mod/github.com/honeycombio -name 'libsymbolic_cabi.so' -path '*linux_x86_64*' | head -1)" artifacts/
+            cp config-honeycomb.yaml config-honeycomb-ios.yaml config-honeycomb-android.yaml artifacts/
+            [ -f ../../testing/symbolication/node-app/dist/app.mjs ] && cp ../../testing/symbolication/node-app/dist/app.mjs ../../testing/symbolication/node-app/dist/app.mjs.map artifacts/ || true
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-artifacts
+          path: benchmarks/processor/artifacts/
+
+  setup:
+    runs-on: ubuntu-latest
+    outputs:
+      impls: ${{ steps.m.outputs.impls }}
+    steps:
+      - id: m
+        run: |
+          case "${{ inputs.language }}" in
+            js)   impls='["honeycomb","traceway-oxc-mem","traceway-oxc-disk","traceway-goja-mem","traceway-goja-disk"]' ;;
+            dart) impls='["traceway-dart-mem","traceway-dart-disk"]' ;;
+            ios)  impls='["honeycomb-ios","traceway-ios-mem","traceway-ios-disk"]' ;;
+            android) impls='["honeycomb-android","traceway-android-mem","traceway-android-disk"]' ;;
+            both) impls='["honeycomb","traceway-oxc-mem","traceway-oxc-disk","traceway-goja-mem","traceway-goja-disk","traceway-dart-mem","traceway-dart-disk"]' ;;
+            *) echo "unknown language ${{ inputs.language }}" >&2; exit 1 ;;
+          esac
+          echo "impls=$impls" >> "$GITHUB_OUTPUT"
+
+  bench:
+    needs: [build, setup]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        impl: ${{ fromJson(needs.setup.outputs.impls) }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: bench-artifacts
+          path: benchmarks/processor/artifacts/
+      - name: Install hcloud CLI
+        run: |
+          curl -sL https://github.com/hetznercloud/cli/releases/latest/download/hcloud-linux-amd64.tar.gz | tar xz hcloud
+          sudo mv hcloud /usr/local/bin/
+      - name: Run benchmark
+        working-directory: benchmarks/processor
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+          SCENARIOS: ${{ inputs.scenarios }}
+          SUT_TYPE: ${{ inputs.sut_type }}
+          LDG_TYPE: ${{ inputs.ldg_type }}
+          CONNECTIONS: ${{ inputs.connections }}
+          STEP_DURATION: ${{ inputs.step_duration }}
+          CHURN_ENTRIES: ${{ inputs.churn_entries }}
+          PAD_KB: ${{ inputs.pad_kb }}
+          OOM_ENTRIES: ${{ inputs.oom_entries }}
+          OOM_PAD_KB: ${{ inputs.oom_pad_kb }}
+          OOM_MAP_PAD_KB: ${{ inputs.oom_map_pad_kb }}
+          OOM_MAPPINGS_PAD_KB: ${{ inputs.oom_mappings_pad_kb }}
+          OOM_DURATION: ${{ inputs.oom_duration }}
+          OOM_SUT_TYPE: ${{ inputs.oom_sut_type }}
+        run: bash run-hetzner.sh ${{ matrix.impl }}
+      - name: Cleanup hetzner
+        if: always()
+        env:
+          HCLOUD_TOKEN: ${{ secrets.HCLOUD_TOKEN }}
+        run: |
+          hcloud server delete "bench-sut-${{ github.run_id }}-${{ matrix.impl }}" 2>/dev/null || true
+          hcloud server delete "bench-ldg-${{ github.run_id }}-${{ matrix.impl }}" 2>/dev/null || true
+          hcloud ssh-key delete "bench-key-${{ github.run_id }}-${{ matrix.impl }}" 2>/dev/null || true
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: results-${{ matrix.impl }}
+          path: benchmarks/processor/results/
+
+  summary:
+    needs: bench
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: results-*
+          merge-multiple: true
+          path: benchmarks/processor/results/
+      - name: Summarize
+        working-directory: benchmarks/processor
+        run: bash summarize.sh ./results | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: summary
+          path: benchmarks/processor/results/

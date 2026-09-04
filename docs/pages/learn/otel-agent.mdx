@@ -2,11 +2,18 @@
 
 import { Callout, Steps } from "nextra/components";
 
-The **Traceway OTel Agent** is a tiny, pre-configured OpenTelemetry Collector that pulls host metrics (CPU, memory, disk, filesystem, network) from a server every 60 seconds and ships them to your Traceway project over OTLP/HTTP. Runs as a background service via `systemd`, `launchd`, or the Windows Service Manager — nothing to write, nothing to tune.
+The **Traceway OTel Agent** is a tiny, pre-configured OpenTelemetry Collector that pulls host metrics (CPU, memory, disk, filesystem, network) from a server every 60 seconds and ships them to your Traceway project over OTLP/HTTP. Runs as a background service via `systemd`, `launchd`, or the Windows Service Manager. There is nothing to write, nothing to tune.
 
 <Callout type="info">
   Full source, advanced config, and the contributor guide live at
   [github.com/tracewayapp/traceway-otel-agent](https://github.com/tracewayapp/traceway-otel-agent).
+</Callout>
+
+<Callout type="warning">
+  The agent installs as a host service, so it is not the way to cover a
+  Kubernetes cluster. Use the DaemonSet in [Kubernetes](/learn/kubernetes)
+  instead; it reports the same hostmetrics per node, plus pod metrics, container
+  logs, and cluster state.
 </Callout>
 
 ## Install
@@ -19,7 +26,7 @@ Open your Traceway dashboard → the project you want metrics to land in → **S
 
 ### Run the installer on your server
 
-**Linux / macOS** (requires `curl`, `tar`, `sudo` or root):
+**Linux / macOS** (requires `curl`, `tar`, `awk`, `mktemp`, either `sha256sum` or `shasum`, and `sudo` or root):
 
 ```bash
 curl -fsSL https://install.tracewayapp.com/install.sh | TRACEWAY_TOKEN=<your-token> bash
@@ -34,20 +41,35 @@ iwr -useb https://install.tracewayapp.com/install.ps1 | iex
 
 </Steps>
 
-That's it. The installer downloads the agent, verifies its checksum, writes a systemd unit / launchd plist / Windows service, and starts it. Metrics begin arriving in your dashboard within about 60 seconds — the first scrape interval.
+That's it. The installer downloads the agent, verifies its checksum, writes a systemd unit / launchd plist / Windows service, and starts it. Metrics begin arriving in your dashboard within about 60 seconds, the first scrape interval.
 
 ## What gets captured
 
 Every 60 seconds the agent scrapes:
 
-- **CPU** — utilization (% per core per state), load averages (1m / 5m / 15m).
-- **Memory** — usage in bytes, utilization %.
-- **Disk** — throughput bytes, IOPS, I/O time per device.
-- **Filesystem** — usage bytes and utilization % per mount.
-- **Network** — throughput bytes, packets, errors, and open connections per interface.
-- **Process** *(opt-in)* — set `TRACEWAY_PROCESS_NAMES` to a list of process names (or `*` for all) to enable per-process CPU time, RSS, and virtual memory.
+- **CPU**: utilization (% per core per state), load averages (1m / 5m / 15m).
+- **Memory**: usage in bytes, utilization %.
+- **Disk**: throughput bytes, IOPS, I/O time per device.
+- **Filesystem**: usage bytes and utilization % per mount.
+- **Network**: throughput bytes, packets, errors, and open connections per interface.
+- **Process** *(opt-in)*: set `TRACEWAY_PROCESS_NAMES` to a list of process names (or `*` for all) to enable per-process CPU time, RSS, and virtual memory.
 
-Every signal is tagged with resource attributes so you can filter in the dashboard — `service.name`, `host.name`, `host.id`, `host.arch`, `os.type`, and on cloud VMs, `cloud.provider`, `cloud.region`, and `cloud.account.id` (EC2 / GCE / Azure are auto-detected).
+### How hosts are identified
+
+Metrics are tagged with `server_name`, which comes from `TRACEWAY_SERVICE_NAME` (default: the machine's hostname). Give every host a distinct `TRACEWAY_SERVICE_NAME` or the hosts cannot be told apart. You can also group and filter by the attributes each scraper puts on its own data points, for example `cpu` and `state` on CPU metrics, `device` and `direction` on disk and network metrics, and `device` and `mountpoint` on filesystem metrics.
+
+The agent also attaches resource attributes to the OTLP payload: `service.name`, `host.name`, `os.type`, and on cloud VMs `cloud.provider`, `cloud.region`, and `cloud.account.id` (EC2 / GCE / Azure are auto-detected). Traceway lifts `service.name` onto metric tags, renamed to `server_name`. Every other resource attribute is dropped unless it is on a fixed allowlist, which covers host and platform metadata (`host.name`, `host.id`, `host.arch`, `os.type`, `os.description`, `cloud.provider`, `cloud.region`, `cloud.availability_zone`) and per-process identity when `TRACEWAY_PROCESS_NAMES` is set (`process.pid`, `process.executable.name`, `process.command_line`, `process.owner`, which is what keeps the per-process series apart). See [Resource Attributes](/client/otel/metrics#resource-attributes) for the full allowlist.
+
+The retained metadata is what the [organization overview](/learn/organization-overview) shows beside each server: OS, architecture, cloud region, and the host name when it differs from `TRACEWAY_SERVICE_NAME`. It is descriptive only. `server_name` remains the identity, so two hosts sharing a `TRACEWAY_SERVICE_NAME` still collapse into one instance no matter how different their metadata is.
+
+## What it opens
+
+The agent binds two loopback-only ports:
+
+- `127.0.0.1:13133` for the health check. The installer polls it to confirm the agent started, and `curl -fsS http://127.0.0.1:13133/` is a quick way to check it is still running.
+- `localhost:8888` for the Collector's own internal metrics.
+
+Neither port is reachable from off the host.
 
 ## Options
 
@@ -56,11 +78,13 @@ Set these env vars alongside `TRACEWAY_TOKEN` before piping into the shell:
 | Var                       | Purpose                                                                                                |
 | ------------------------- | ------------------------------------------------------------------------------------------------------ |
 | `TRACEWAY_SERVICE_NAME`   | `service.name` label for this host. Default: the machine's hostname.                                   |
-| `TRACEWAY_ENDPOINT`       | OTLP/HTTP base URL. Override when running against self-hosted Traceway.                                |
+| `TRACEWAY_ENDPOINT`       | OTLP/HTTP base URL. Default: `https://cloud.tracewayapp.com/api/otel`. Override when running against self-hosted Traceway. |
 | `TRACEWAY_LOG_PATHS`      | Comma-separated file globs to tail as logs (e.g. `/var/log/app/*.log`). Leave unset to ship metrics only. |
-| `TRACEWAY_PROCESS_NAMES`  | Comma-separated process names (e.g. `myapp,postgres`) or `*` for all. Off by default — enables per-process CPU / memory metrics. |
+| `TRACEWAY_PROCESS_NAMES`  | Comma-separated process names (e.g. `myapp,postgres`) or `*` for all. Off by default; enables per-process CPU / memory metrics. |
+| `TRACEWAY_VERSION`        | Pin the agent version, e.g. `v0.5.0`. Default: the version the installer was published with. Works on both installers. |
+| `TRACEWAY_RELEASES_URL`   | Override the release-archive base URL. Default: GitHub Releases. Accepts `file://` URLs for air-gapped installs. Linux / macOS installer only. |
 
-Example — named host, app logs, self-hosted Traceway:
+Example (named host, app logs, self-hosted Traceway):
 
 ```bash
 curl -fsSL https://install.tracewayapp.com/install.sh | \
@@ -72,6 +96,8 @@ curl -fsSL https://install.tracewayapp.com/install.sh | \
 ```
 
 Re-running the installer with the same env vars upgrades in place.
+
+Note that it also overwrites `config.yaml` with the release default. If you edit that file by hand, pin `TRACEWAY_VERSION` first so an upgrade cannot swap the config under you unnoticed.
 
 ## Uninstall
 
@@ -92,4 +118,4 @@ Stops and removes the service, binary, and config directory. Your Traceway proje
 
 ---
 
-For deeper configuration — tuning the scrape interval, writing filelog operators, air-gapped and manual installs, signed releases, or contributing support for additional auth modes — see the agent repo: [github.com/tracewayapp/traceway-otel-agent](https://github.com/tracewayapp/traceway-otel-agent).
+For deeper configuration (tuning the scrape interval, writing filelog operators, air-gapped and manual installs, signed releases, or contributing support for additional auth modes), see the agent repo: [github.com/tracewayapp/traceway-otel-agent](https://github.com/tracewayapp/traceway-otel-agent).

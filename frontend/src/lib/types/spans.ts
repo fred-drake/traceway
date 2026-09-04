@@ -6,6 +6,8 @@ export type Span = {
 	startTime: string; // ISO datetime
 	duration: number; // nanoseconds
 	recordedAt: string;
+	parentSpanId?: string;
+	attributes?: Record<string, string> | null;
 };
 
 export type TraceDetail = {

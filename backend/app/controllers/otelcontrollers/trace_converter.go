@@ -1,6 +1,7 @@
 package otelcontrollers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/tracewayapp/traceway/backend/app/controllers/clientcontrollers"
 	"github.com/tracewayapp/traceway/backend/app/models"
+	"github.com/tracewayapp/traceway/backend/app/services/contentflag"
 	coltracepb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	commonpb "go.opentelemetry.io/proto/otlp/common/v1"
 	tracepb "go.opentelemetry.io/proto/otlp/trace/v1"
@@ -18,6 +20,8 @@ import (
 type aiTraceConversation struct {
 	StorageKey string
 	Content    []byte
+	Input      string
+	Output     string
 }
 
 type entityKind int
@@ -41,7 +45,7 @@ func (k entityKind) traceType() string {
 	return ""
 }
 
-func convertTraces(projectId uuid.UUID, req *coltracepb.ExportTraceServiceRequest) (
+func convertTraces(ctx context.Context, existingProject *models.Project, projectId uuid.UUID, req *coltracepb.ExportTraceServiceRequest) (
 	endpoints []models.Endpoint,
 	tasks []models.Task,
 	spans []models.Span,
@@ -49,11 +53,23 @@ func convertTraces(projectId uuid.UUID, req *coltracepb.ExportTraceServiceReques
 	aiTraces []models.AiTrace,
 	aiConversations []aiTraceConversation,
 ) {
+	suppressEntities := existingProject != nil && clientcontrollers.IsFrontendFramework(existingProject.Framework)
+
+	// nil languages falls back to the default pack; a project that disabled
+	// every pack carries an empty (non-nil) slice and scans custom terms only.
+	var flagLanguages, customFlagTerms []string
+	if existingProject != nil {
+		flagLanguages = existingProject.AiFlaggedLanguages
+		customFlagTerms = existingProject.AiFlaggedTerms
+	}
+	flagMatcher := contentflag.NewMatcher(flagLanguages, customFlagTerms)
 
 	for _, rs := range req.ResourceSpans {
 		resourceAttrs := rs.GetResource().GetAttributes()
 		serverName := getStringAttribute(resourceAttrs, "service.name")
 		appVersion := getStringAttribute(resourceAttrs, "service.version")
+		language := getStringAttribute(resourceAttrs, "telemetry.sdk.language")
+		proguardUuid := getStringAttribute(resourceAttrs, "app.debug.proguard_uuid")
 		if appVersion == "" {
 			if scriptVersionId := getStringAttribute(resourceAttrs, "cloudflare.script_version.id"); scriptVersionId != "" {
 				if idx := strings.LastIndex(scriptVersionId, "-"); idx != -1 {
@@ -92,6 +108,9 @@ func convertTraces(projectId uuid.UUID, req *coltracepb.ExportTraceServiceReques
 		spanIdToPromotion := map[string]promotion{}
 
 		for _, entry := range allSpans {
+			if suppressEntities {
+				break
+			}
 			span := entry.span
 			kind := classifySpan(span, spanById)
 			if kind == entityNone {
@@ -161,6 +180,11 @@ func convertTraces(projectId uuid.UUID, req *coltracepb.ExportTraceServiceReques
 			span := entry.span
 			spanAttrs := span.Attributes
 			allAttrs := extractAttributes(spanAttrs)
+			// A span carrying exception.stacktrace always yields an exception
+			// record (from the attribute path, or from the event when both are
+			// present), so the raw blob is never duplicated onto the
+			// endpoint/task/span rows or the exception's attribute map.
+			delete(allAttrs, "exception.stacktrace")
 			startTime := nanoToTime(span.StartTimeUnixNano)
 			endTime := nanoToTime(span.EndTimeUnixNano)
 			duration := endTime.Sub(startTime)
@@ -220,12 +244,20 @@ func convertTraces(projectId uuid.UUID, req *coltracepb.ExportTraceServiceReques
 					)
 					aiTrace.DistributedTraceId = prom.distributedTraceId
 					aiTrace.IsRoot = prom.isRoot
-					aiTraces = append(aiTraces, aiTrace)
+					aiTrace.ConversationId = resolveConversationId(spanAttrs, resourceAttrs, prom.distributedTraceId)
+					var convInput, convOutput string
 					if conv := extractConversation(spanAttrs, projectId, prom.id); conv != nil {
+						convInput, convOutput = conv.Input, conv.Output
 						aiConversations = append(aiConversations, *conv)
 					}
+					aiTrace.ToolCallCount, aiTrace.ToolNames = extractToolCalls(spanAttrs, convOutput)
+					if terms := flagMatcher.Scan(convInput, convOutput); len(terms) > 0 {
+						aiTrace.Flagged = true
+						aiTrace.FlaggedTerms = terms
+					}
+					aiTraces = append(aiTraces, aiTrace)
 				}
-			} else if len(span.ParentSpanId) > 0 {
+			} else if !suppressEntities && len(span.ParentSpanId) > 0 {
 				// Non-root, unpromoted span → goes to the generic spans table,
 				// re-rooted to its nearest enclosing entity (or the OTel
 				// trace_id as fallback when the parent chain doesn't reach a
@@ -246,12 +278,16 @@ func convertTraces(projectId uuid.UUID, req *coltracepb.ExportTraceServiceReques
 					Duration:     duration,
 					RecordedAt:   startTime,
 					ParentSpanId: ptrSpanUUID(span.ParentSpanId),
+					Attributes:   allAttrs,
 				})
-			} else {
-				// Unpromoted root span — match historical behavior and drop
-				// it (no entity row, no span row, no exception). Common case:
-				// CLIENT-kind roots or non-HTTP SERVER roots from custom
-				// instrumentation that we don't have a dedicated page for.
+			} else if !spanCarriesException(span) {
+				// Unpromoted root span: match historical behavior and drop it
+				// (no entity row, no span row). Common case: CLIENT-kind roots
+				// or non-HTTP SERVER roots from custom instrumentation that we
+				// don't have a dedicated page for. Spans carrying an exception
+				// signal (event or exception.* span attributes, e.g. Honeycomb's
+				// global-errors zero-duration root span) fall through so the
+				// exception is still captured, without an entity or span row.
 				continue
 			}
 
@@ -260,17 +296,30 @@ func convertTraces(projectId uuid.UUID, req *coltracepb.ExportTraceServiceReques
 				traceType = "task"
 			}
 
+			hadExceptionEvent := false
 			for _, event := range span.Events {
 				if event.Name == "exception" {
+					hadExceptionEvent = true
 					exc := buildException(
-						projectId, ownerId, traceType, event,
-						allAttrs, serverName, appVersion,
+						ctx, existingProject, projectId, ownerId, traceType, event.Attributes, event.TimeUnixNano,
+						allAttrs, serverName, appVersion, language, proguardUuid, entry.scopeName,
 					)
 					if owner != nil {
 						exc.DistributedTraceId = owner.distributedTraceId
 					}
 					exceptions = append(exceptions, exc)
 				}
+			}
+
+			if !hadExceptionEvent && hasExceptionAttributes(span.Attributes) {
+				exc := buildException(
+					ctx, existingProject, projectId, ownerId, traceType, span.Attributes, span.StartTimeUnixNano,
+					allAttrs, serverName, appVersion, language, proguardUuid, entry.scopeName,
+				)
+				if owner != nil {
+					exc.DistributedTraceId = owner.distributedTraceId
+				}
+				exceptions = append(exceptions, exc)
 			}
 		}
 	}
@@ -279,6 +328,13 @@ func convertTraces(projectId uuid.UUID, req *coltracepb.ExportTraceServiceReques
 
 func classifySpan(span *tracepb.Span, spanById map[string]*tracepb.Span) entityKind {
 	attrs := span.Attributes
+	// Honeycomb's browser SDK stamps page context (url.path etc.) on every
+	// span, including the zero-duration INTERNAL `exception` spans emitted by
+	// its global-errors instrumentation. Those must become exception rows,
+	// not endpoints, so exception-bearing INTERNAL spans are never promoted.
+	if span.Kind == tracepb.Span_SPAN_KIND_INTERNAL && hasExceptionAttributes(attrs) {
+		return entityNone
+	}
 	if (span.Kind == tracepb.Span_SPAN_KIND_SERVER || span.Kind == tracepb.Span_SPAN_KIND_INTERNAL) && hasHTTPAttributes(attrs) {
 		if len(span.ParentSpanId) == 0 {
 			return entityEndpoint
@@ -330,7 +386,13 @@ func buildEndpoint(
 		statusCode = int16(code)
 	}
 
-	if statusCode == 404 {
+	// A 404 collapses to UNMATCHED only when no real route matched: http.route
+	// is missing/invalid, or a catch-all made of only slashes and wildcards
+	// ("/", "/*", "/**", "*/*") — what Express middleware, Spring resource
+	// handlers and not-found handlers report for unmatched requests. A concrete
+	// matched route returning 404 is a deliberate response and keeps its identity.
+	route := getStringAttribute(attrs, "http.route")
+	if statusCode == 404 && (!strings.HasPrefix(route, "/") || strings.Trim(route, "/*") == "") {
 		endpoint = "UNMATCHED"
 	}
 
@@ -439,19 +501,39 @@ func buildTask(
 }
 
 func buildException(
+	ctx context.Context,
+	existingProject *models.Project,
 	projectId, traceId uuid.UUID,
 	traceType string,
-	event *tracepb.Span_Event,
+	excAttrs []*commonpb.KeyValue,
+	timeUnixNano uint64,
 	spanAttrs map[string]string,
-	serverName, appVersion string,
+	serverName, appVersion, language, proguardUuid, scopeName string,
 ) models.ExceptionStackTrace {
-	eventAttrs := event.Attributes
-	excType := getStringAttribute(eventAttrs, "exception.type")
-	excMessage := getStringAttribute(eventAttrs, "exception.message")
-	excStacktrace := getStringAttribute(eventAttrs, "exception.stacktrace")
+	excType := getStringAttribute(excAttrs, "exception.type")
+	excMessage := getStringAttribute(excAttrs, "exception.message")
 
-	stackTrace := formatExceptionStackTrace(excType, excMessage, excStacktrace)
+	stackTrace, ok := buildHoneycombStackTrace(excType, excMessage, excAttrs)
+	if !ok {
+		excStacktrace := getStringAttribute(excAttrs, "exception.stacktrace")
+		if excStacktrace == "" {
+			if frames, aok := buildAndroidStructuredStackTrace(excAttrs); aok {
+				excStacktrace = frames
+			}
+		}
+		stackTrace = formatExceptionStackTrace(excType, excMessage, excStacktrace)
+	}
+
+	stackTrace = otelSymbolicateJs(existingProject, projectId, ctx, stackTrace, language, scopeName)
+	stackTrace = otelSymbolicateAndroid(existingProject, projectId, ctx, stackTrace, language, proguardUuid)
+
 	hash := clientcontrollers.ComputeExceptionHash(stackTrace, false)
+
+	attrs := spanAttrs
+	if isJsLanguage(language) || isAndroidLanguage(language) {
+		attrs = cloneStringMap(spanAttrs)
+		attrs["telemetry.sdk.language"] = language
+	}
 
 	return models.ExceptionStackTrace{
 		Id:            uuid.New(),
@@ -460,11 +542,129 @@ func buildException(
 		TraceType:     traceType,
 		ExceptionHash: hash,
 		StackTrace:    stackTrace,
-		RecordedAt:    nanoToTime(event.TimeUnixNano),
-		Attributes:    spanAttrs,
+		RecordedAt:    nanoToTime(timeUnixNano),
+		Attributes:    attrs,
 		AppVersion:    appVersion,
 		ServerName:    serverName,
 	}
+}
+
+func hasExceptionAttributes(attrs []*commonpb.KeyValue) bool {
+	return getStringAttribute(attrs, "exception.type") != "" ||
+		getStringAttribute(attrs, "exception.message") != "" ||
+		getStringAttribute(attrs, "exception.stacktrace") != ""
+}
+
+func spanCarriesException(span *tracepb.Span) bool {
+	for _, event := range span.Events {
+		if event.Name == "exception" {
+			return true
+		}
+	}
+	return hasExceptionAttributes(span.Attributes)
+}
+
+func cloneStringMap(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m)+1)
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func isJsLanguage(lang string) bool {
+	switch strings.ToLower(lang) {
+	case "webjs", "nodejs", "javascript", "typescript":
+		return true
+	}
+	return false
+}
+
+func isAndroidLanguage(lang string) bool {
+	switch strings.ToLower(strings.TrimSpace(lang)) {
+	case "android", "java", "kotlin":
+		return true
+	}
+	return false
+}
+
+func buildAndroidStructuredStackTrace(eventAttrs []*commonpb.KeyValue) (string, bool) {
+	classes := getStringArray(eventAttrs, "exception.structured_stacktrace.classes")
+	if len(classes) == 0 {
+		return "", false
+	}
+	methods := getStringArray(eventAttrs, "exception.structured_stacktrace.methods")
+	files := getStringArray(eventAttrs, "exception.structured_stacktrace.source_files")
+	lines := getIntArray(eventAttrs, "exception.structured_stacktrace.lines")
+
+	var b strings.Builder
+	for i := range classes {
+		method := ""
+		if i < len(methods) {
+			method = methods[i]
+		}
+		file := ""
+		if i < len(files) {
+			file = files[i]
+		}
+		loc := file
+		if i < len(lines) && lines[i] > 0 {
+			loc = fmt.Sprintf("%s:%d", file, lines[i])
+		}
+		fmt.Fprintf(&b, "\tat %s.%s(%s)\n", classes[i], method, loc)
+	}
+	return strings.TrimRight(b.String(), "\n"), true
+}
+
+// JS instrumentations are also recognizable by their scope name when
+// telemetry.sdk.language is absent: npm scoped packages ("@scope/pkg") are
+// an npm-only naming convention across OTel SDKs, and Next.js's built-in
+// tracer reports the unscoped scope name "next.js".
+func isJsTelemetry(language, scopeName string) bool {
+	if isJsLanguage(language) {
+		return true
+	}
+	if strings.HasPrefix(scopeName, "@") && strings.Contains(scopeName, "/") {
+		return true
+	}
+	return scopeName == "next.js"
+}
+
+func buildHoneycombStackTrace(excType, excMessage string, eventAttrs []*commonpb.KeyValue) (string, bool) {
+	urls := getStringArray(eventAttrs, "exception.structured_stacktrace.urls")
+	if len(urls) == 0 {
+		return "", false
+	}
+	functions := getStringArray(eventAttrs, "exception.structured_stacktrace.functions")
+	lines := getIntArray(eventAttrs, "exception.structured_stacktrace.lines")
+	columns := getIntArray(eventAttrs, "exception.structured_stacktrace.columns")
+
+	at := func(s []string, i int) string {
+		if i < len(s) {
+			return s[i]
+		}
+		return ""
+	}
+	atInt := func(s []int64, i int) int64 {
+		if i < len(s) {
+			return s[i]
+		}
+		return 0
+	}
+
+	var b strings.Builder
+	if header := formatExceptionStackTrace(excType, excMessage, ""); header != "unknown exception" {
+		b.WriteString(header)
+		b.WriteByte('\n')
+	}
+	for i, url := range urls {
+		if fn := at(functions, i); fn != "" {
+			b.WriteString(fn)
+			b.WriteString("()\n")
+		}
+		fmt.Fprintf(&b, "    %s:%d:%d\n", url, atInt(lines, i), atInt(columns, i))
+	}
+	return strings.TrimRight(b.String(), "\n"), true
 }
 
 func hasGenAiAttributes(attrs []*commonpb.KeyValue) bool {
@@ -517,7 +717,9 @@ func buildAiTrace(
 	userId := getStringAttribute(attrs, "user.id")
 	finishReason := getStringAttribute(attrs, "gen_ai.response.finish_reason")
 	if finishReason == "" {
-		finishReason = getStringAttribute(attrs, "gen_ai.response.finish_reasons")
+		// finish_reasons is an array attribute in the OTel gen_ai conventions;
+		// getStringValues handles both the scalar and array encodings.
+		finishReason = strings.Join(getStringValues(attrs, "gen_ai.response.finish_reasons"), ",")
 	}
 
 	statusCode := uint8(span.Status.GetCode())
@@ -564,6 +766,8 @@ var standardAiAttrPrefixes = []string{
 	"gen_ai.completion",
 	"gen_ai.response.finish_reason",
 	"gen_ai.response.finish_reasons",
+	"gen_ai.conversation.id",
+	"gen_ai.tool.",
 	"trace.name",
 	"trace.input",
 	"trace.output",
@@ -628,7 +832,121 @@ func extractConversation(attrs []*commonpb.KeyValue, projectId, traceId uuid.UUI
 	return &aiTraceConversation{
 		StorageKey: fmt.Sprintf("ai-traces/%s/%s.json", projectId, traceId),
 		Content:    data,
+		Input:      input,
+		Output:     output,
 	}
+}
+
+// resolveConversationId picks the conversation grouping key for an AI trace:
+// an explicit gen_ai.conversation.id, else session.id (span first, then
+// resource — browser SDKs stamp it on the resource), else the distributed
+// trace id so a single agent run still groups its calls.
+func resolveConversationId(spanAttrs, resourceAttrs []*commonpb.KeyValue, distributedTraceId *uuid.UUID) string {
+	if id := getStringAttribute(spanAttrs, "gen_ai.conversation.id"); id != "" {
+		return id
+	}
+	if id := getStringAttribute(spanAttrs, "session.id"); id != "" {
+		return id
+	}
+	if id := getStringAttribute(resourceAttrs, "session.id"); id != "" {
+		return id
+	}
+	if distributedTraceId != nil {
+		return distributedTraceId.String()
+	}
+	return ""
+}
+
+const maxToolNames = 50
+
+// extractToolCalls pulls tool-call telemetry out of the completion payload
+// (OpenAI choices/tool_calls, Anthropic content/tool_use, OTel gen_ai output
+// messages with tool_call parts), falling back to the execute_tool span
+// attributes when no payload is available. Names are deduplicated in
+// first-seen order; commas are stripped because the names are persisted as a
+// comma-separated column.
+func extractToolCalls(attrs []*commonpb.KeyValue, output string) (int64, []string) {
+	count, names := parseToolCallsFromOutput(output)
+	if count == 0 && getStringAttribute(attrs, "gen_ai.operation.name") == "execute_tool" {
+		count = 1
+		if name := sanitizeToolName(getStringAttribute(attrs, "gen_ai.tool.name")); name != "" {
+			names = []string{name}
+		}
+	}
+	return count, names
+}
+
+func parseToolCallsFromOutput(output string) (int64, []string) {
+	if output == "" {
+		return 0, nil
+	}
+
+	var count int64
+	var names []string
+	seen := map[string]struct{}{}
+	record := func(name string) {
+		count++
+		name = sanitizeToolName(name)
+		if name == "" || len(names) >= maxToolNames {
+			return
+		}
+		if _, dup := seen[name]; dup {
+			return
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+
+	type contentPart struct {
+		Type string `json:"type"`
+		Name string `json:"name"`
+	}
+	var objectShape struct {
+		// OpenAI-style chat completion response.
+		Choices []struct {
+			Message struct {
+				ToolCalls []struct {
+					Function struct {
+						Name string `json:"name"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+		} `json:"choices"`
+		// Anthropic-style response content blocks.
+		Content []contentPart `json:"content"`
+	}
+	if err := json.Unmarshal([]byte(output), &objectShape); err == nil {
+		for _, choice := range objectShape.Choices {
+			for _, call := range choice.Message.ToolCalls {
+				record(call.Function.Name)
+			}
+		}
+		for _, part := range objectShape.Content {
+			if part.Type == "tool_use" {
+				record(part.Name)
+			}
+		}
+		return count, names
+	}
+
+	// OTel gen_ai output messages: a top-level array of messages with parts.
+	var messagesShape []struct {
+		Parts []contentPart `json:"parts"`
+	}
+	if err := json.Unmarshal([]byte(output), &messagesShape); err == nil {
+		for _, msg := range messagesShape {
+			for _, part := range msg.Parts {
+				if part.Type == "tool_call" || part.Type == "tool_use" {
+					record(part.Name)
+				}
+			}
+		}
+	}
+	return count, names
+}
+
+func sanitizeToolName(name string) string {
+	return strings.TrimSpace(strings.ReplaceAll(name, ",", ""))
 }
 
 func formatExceptionStackTrace(excType, excMessage, excStacktrace string) string {

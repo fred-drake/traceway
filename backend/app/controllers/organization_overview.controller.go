@@ -7,6 +7,7 @@ import (
 	"math"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tracewayapp/traceway/backend/app/db"
@@ -25,8 +26,7 @@ type organizationOverviewController struct{}
 
 var OrganizationOverviewController = organizationOverviewController{}
 
-const orgOverviewMaxIssues = 50
-const orgOverviewMaxPages = 50
+const orgOverviewMaxIssueFetch = 1000
 
 // orgOverviewProjects loads the organization's projects in one short
 // transaction: the fan-out handlers run their telemetry queries outside any
@@ -380,43 +380,142 @@ type orgIssueRow struct {
 	ProjectName string    `json:"projectName"`
 }
 
+type orgIssuesRequest struct {
+	FromDate   time.Time        `json:"fromDate"`
+	ToDate     time.Time        `json:"toDate"`
+	OrderBy    string           `json:"orderBy"`
+	Pagination PaginationParams `json:"pagination" binding:"required"`
+	Search     string           `json:"search"`
+	SearchType string           `json:"searchType"`
+}
+
+func normalizeIssueOrderBy(orderBy string) string {
+	switch strings.TrimSuffix(orderBy, "_asc") {
+	case "last_seen", "first_seen", "count":
+		return orderBy
+	}
+	return "last_seen"
+}
+
+func orgIssueLess(orderBy string) func(a, b orgIssueRow) bool {
+	ascending := strings.HasSuffix(orderBy, "_asc")
+	field := strings.TrimSuffix(orderBy, "_asc")
+	return func(a, b orgIssueRow) bool {
+		var less, equal bool
+		switch field {
+		case "count":
+			less, equal = a.Count < b.Count, a.Count == b.Count
+		case "first_seen":
+			less, equal = a.FirstSeen.Before(b.FirstSeen), a.FirstSeen.Equal(b.FirstSeen)
+		default:
+			less, equal = a.LastSeen.Before(b.LastSeen), a.LastSeen.Equal(b.LastSeen)
+		}
+		if equal {
+			if a.ExceptionHash != b.ExceptionHash {
+				return a.ExceptionHash < b.ExceptionHash
+			}
+			return a.ProjectId.String() < b.ProjectId.String()
+		}
+		if ascending {
+			return less
+		}
+		return !less
+	}
+}
+
+func attachOrgIssueTrends(ctx *gin.Context, rows []orgIssueRow) (partial bool) {
+	hashesByProject := map[uuid.UUID][]string{}
+	for _, row := range rows {
+		hashesByProject[row.ProjectId] = append(hashesByProject[row.ProjectId], row.ExceptionHash)
+	}
+	now := time.Now()
+	start24h := now.Add(-24 * time.Hour)
+	trends := map[uuid.UUID]map[string][]models.ExceptionTrendPoint{}
+	for projectId, hashes := range hashesByProject {
+		span := traceway.StartSpan(ctx, fmt.Sprintf("org overview issue trends: project %s", projectId))
+		projectTrends, err := telemetry.ExceptionStackTraceRepository.GetHourlyTrendForHashes(ctx, projectId, hashes, start24h, now)
+		span.End()
+		if err != nil {
+			partial = true
+			traceway.CaptureException(traceway.NewStackTraceErrorf("failed to load issue trends for project %s: %w", projectId, err))
+			continue
+		}
+		trends[projectId] = projectTrends
+	}
+	for i := range rows {
+		if trend, ok := trends[rows[i].ProjectId][rows[i].ExceptionHash]; ok {
+			rows[i].HourlyTrend = trend
+		} else {
+			rows[i].HourlyTrend = []models.ExceptionTrendPoint{}
+		}
+	}
+	return partial
+}
+
 func (c *organizationOverviewController) Issues(ctx *gin.Context) {
 	organizationId := middleware.GetOrganizationId(ctx)
+	var request orgIssuesRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		middleware.RejectBindError(ctx, err, "Invalid request body")
+		return
+	}
+	if request.ToDate.Before(request.FromDate) {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": "The end of the range must not be before its start"})
+		return
+	}
+	orderBy := normalizeIssueOrderBy(request.OrderBy)
+	page, pageSize := request.Pagination.Page, request.Pagination.PageSize
+	maxPages := orgOverviewMaxIssueFetch / pageSize
+	if page > maxPages {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": fmt.Sprintf("Only the first %d issues can be paged; narrow the time range or search", orgOverviewMaxIssueFetch)})
+		return
+	}
+
 	projects, err := orgOverviewProjects(organizationId)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to list organization projects: %w", err))
 		return
 	}
 
-	now := time.Now().UTC()
-	from := now.Add(-24 * time.Hour)
-
-	issues := make([]orgIssueRow, 0)
-	var totalGroups int64
+	fetch := page * pageSize
+	candidates := make([]orgIssueRow, 0)
+	var total int64
 	partial := false
 	for _, project := range projects {
 		span := traceway.StartSpan(ctx, fmt.Sprintf("org overview issues: project %s", project.Id))
-		groups, total, err := telemetry.ExceptionStackTraceRepository.FindGrouped(ctx, project.Id, from, now, 1, orgOverviewMaxIssues, "last_seen", "", "", false)
+		groups, projectTotal, err := telemetry.ExceptionStackTraceRepository.FindGrouped(ctx, project.Id, request.FromDate, request.ToDate, 1, fetch, orderBy, request.Search, request.SearchType, false)
 		span.End()
 		if err != nil {
 			partial = true
 			traceway.CaptureException(traceway.NewStackTraceErrorf("failed to load issues for project %s: %w", project.Id, err))
 			continue
 		}
-		totalGroups += total
+		total += projectTotal
 		for _, group := range groups {
-			issues = append(issues, orgIssueRow{ExceptionGroup: group, ProjectId: project.Id, ProjectName: project.Name})
+			candidates = append(candidates, orgIssueRow{ExceptionGroup: group, ProjectId: project.Id, ProjectName: project.Name})
 		}
 	}
 
-	sort.Slice(issues, func(i, j int) bool {
-		return issues[i].LastSeen.After(issues[j].LastSeen)
-	})
-	if len(issues) > orgOverviewMaxIssues {
-		issues = issues[:orgOverviewMaxIssues]
+	less := orgIssueLess(orderBy)
+	sort.Slice(candidates, func(i, j int) bool { return less(candidates[i], candidates[j]) })
+	offset := (page - 1) * pageSize
+	rows := []orgIssueRow{}
+	if offset < len(candidates) {
+		rows = candidates[offset:min(offset+pageSize, len(candidates))]
+	}
+	if attachOrgIssueTrends(ctx, rows) {
+		partial = true
+	}
+	pagination := buildPagination(page, pageSize, int(total))
+	if pagination.TotalPages > int64(maxPages) {
+		pagination.TotalPages = int64(maxPages)
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"issues": issues, "totalGroups": totalGroups, "partial": partial})
+	ctx.JSON(http.StatusOK, gin.H{
+		"data":       rows,
+		"pagination": pagination,
+		"partial":    partial,
+	})
 }
 
 type orgPageRow struct {
@@ -424,11 +523,41 @@ type orgPageRow struct {
 	ProjectName string `json:"projectName"`
 }
 
+type orgPagesRequest struct {
+	Status     string           `json:"status"`
+	Search     string           `json:"search"`
+	FromDate   *time.Time       `json:"fromDate"`
+	ToDate     *time.Time       `json:"toDate"`
+	Pagination PaginationParams `json:"pagination" binding:"required"`
+}
+
 func (c *organizationOverviewController) Pages(ctx *gin.Context) {
 	tx := db.GetTx(ctx)
 	organizationId := middleware.GetOrganizationId(ctx)
+	var request orgPagesRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		middleware.RejectBindError(ctx, err, "Invalid request body")
+		return
+	}
+	if request.Status == "" {
+		request.Status = "active"
+	}
+	if !validPageStatusFilters[request.Status] {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid status filter"})
+		return
+	}
+	if request.FromDate != nil && request.ToDate != nil && request.ToDate.Before(*request.FromDate) {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": "The end of the range must not be before its start"})
+		return
+	}
+	page, pageSize := request.Pagination.Page, request.Pagination.PageSize
 
-	pages, err := transactional.PageRepository.FindByOrganization(tx, organizationId, "active", orgOverviewMaxPages, 0)
+	total, err := transactional.PageRepository.CountByOrganizationFiltered(tx, organizationId, request.Status, request.Search, request.FromDate, request.ToDate)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to count organization pages: %w", err))
+		return
+	}
+	pages, err := transactional.PageRepository.FindByOrganizationFiltered(tx, organizationId, request.Status, request.Search, request.FromDate, request.ToDate, pageSize, (page-1)*pageSize)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to list organization pages: %w", err))
 		return
@@ -436,11 +565,6 @@ func (c *organizationOverviewController) Pages(ctx *gin.Context) {
 	openCount, err := transactional.PageRepository.CountByOrganization(tx, organizationId, models.PageStatusOpen)
 	if err != nil {
 		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to count open pages: %w", err))
-		return
-	}
-	downCount, err := transactional.SyntheticCheckRepository.CountDownByOrganization(tx, organizationId)
-	if err != nil {
-		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to count down monitors: %w", err))
 		return
 	}
 	projects, err := transactional.ProjectRepository.FindByOrganizationId(tx, organizationId)
@@ -454,8 +578,8 @@ func (c *organizationOverviewController) Pages(ctx *gin.Context) {
 	}
 
 	names := map[int]string{}
-	for _, page := range pages {
-		if page.AcknowledgedBy != nil || page.ResolvedBy != nil {
+	for _, p := range pages {
+		if p.AcknowledgedBy != nil || p.ResolvedBy != nil {
 			names, err = memberNames(tx, organizationId)
 			if err != nil {
 				ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to load members: %w", err))
@@ -466,11 +590,72 @@ func (c *organizationOverviewController) Pages(ctx *gin.Context) {
 	}
 
 	items := make([]orgPageRow, 0, len(pages))
-	for _, page := range pages {
-		items = append(items, orgPageRow{pageResponse: toPageResponse(page, names), ProjectName: projectNames[page.ProjectId]})
+	for _, p := range pages {
+		items = append(items, orgPageRow{pageResponse: toPageResponse(p, names), ProjectName: projectNames[p.ProjectId]})
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"pages": items, "openPagesCount": openCount, "downMonitorsCount": downCount})
+	ctx.JSON(http.StatusOK, gin.H{
+		"data":           items,
+		"pagination":     buildPagination(page, pageSize, total),
+		"openPagesCount": openCount,
+	})
+}
+
+func (c *organizationOverviewController) Counts(ctx *gin.Context) {
+	tx := db.GetTx(ctx)
+	organizationId := middleware.GetOrganizationId(ctx)
+	openCount, err := transactional.PageRepository.CountByOrganization(tx, organizationId, models.PageStatusOpen)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to count open pages: %w", err))
+		return
+	}
+	downCount, err := transactional.SyntheticCheckRepository.CountDownByOrganization(tx, organizationId)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to count down monitors: %w", err))
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"openPagesCount": openCount, "downMonitorsCount": downCount})
+}
+
+type orgIncidentsRequest struct {
+	Search     string           `json:"search"`
+	FromDate   *time.Time       `json:"fromDate"`
+	ToDate     *time.Time       `json:"toDate"`
+	Pagination PaginationParams `json:"pagination" binding:"required"`
+}
+
+func (c *organizationOverviewController) Incidents(ctx *gin.Context) {
+	tx := db.GetTx(ctx)
+	organizationId := middleware.GetOrganizationId(ctx)
+	var request orgIncidentsRequest
+	if err := ctx.ShouldBindJSON(&request); err != nil {
+		middleware.RejectBindError(ctx, err, "Invalid request body")
+		return
+	}
+	if request.FromDate != nil && request.ToDate != nil && request.ToDate.Before(*request.FromDate) {
+		ctx.JSON(http.StatusUnprocessableEntity, gin.H{"error": "The end of the range must not be before its start"})
+		return
+	}
+	page, pageSize := request.Pagination.Page, request.Pagination.PageSize
+
+	total, err := transactional.CheckIncidentRepository.CountByOrganizationFiltered(tx, organizationId, request.Search, request.FromDate, request.ToDate)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to count organization incidents: %w", err))
+		return
+	}
+	incidents, err := transactional.CheckIncidentRepository.FindByOrganizationPaged(tx, organizationId, request.Search, request.FromDate, request.ToDate, pageSize, (page-1)*pageSize)
+	if err != nil {
+		ctx.AbortWithError(http.StatusInternalServerError, traceway.NewStackTraceErrorf("failed to list organization incidents: %w", err))
+		return
+	}
+	if incidents == nil {
+		incidents = []*models.OrgIncident{}
+	}
+	views, ok := buildIncidentViews(ctx, tx, incidents)
+	if !ok {
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{"data": views, "pagination": buildPagination(page, pageSize, total)})
 }
 
 type orgMonitorRow struct {

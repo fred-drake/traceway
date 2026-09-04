@@ -48,8 +48,11 @@ func (r *metricPointRepository) queryTimeSeries(ctx context.Context, projectId u
 	if aggregation == "last" {
 		table = "metric_points"
 	}
-
-	aggFunc := aggregationFunc(aggregation, table)
+	isRate := aggregation == "rate"
+	var lookback time.Duration
+	if isRate {
+		table, intervalMinutes, lookback = rateSource(table, intervalMinutes)
+	}
 
 	query := "SELECT toStartOfInterval(recorded_at, INTERVAL ? MINUTE) AS bucket"
 
@@ -70,12 +73,21 @@ func (r *metricPointRepository) queryTimeSeries(ctx context.Context, projectId u
 		query += " AS group_key"
 	}
 
-	query += ", " + aggFunc + " AS agg_value FROM " + table + " WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?"
-	args = append(args, projectId, name, from, to)
-
+	where := " WHERE project_id = ? AND name = ? AND recorded_at >= ? AND recorded_at <= ?"
+	whereArgs := []interface{}{projectId, name, from.Add(-lookback), to}
 	for k, v := range tagFilters {
-		query += " AND tags[?] = ?"
-		args = append(args, k, v)
+		where += " AND tags[?] = ?"
+		whereArgs = append(whereArgs, k, v)
+	}
+
+	if isRate {
+		query += ", sum(greatest(delta, 0)) / ? AS agg_value FROM (" + rateDeltasSelect(table, where) + ") WHERE rn > 1 AND recorded_at >= ?"
+		args = append(args, float64(intervalMinutes*60))
+		args = append(args, whereArgs...)
+		args = append(args, from)
+	} else {
+		query += ", " + aggregationFunc(aggregation, table) + " AS agg_value FROM " + table + where
+		args = append(args, whereArgs...)
 	}
 
 	query += " GROUP BY bucket"
@@ -187,6 +199,28 @@ func selectTable(duration time.Duration) string {
 	default:
 		return "metric_points_1d"
 	}
+}
+
+var rollupStepMinutes = map[string]int{"metric_points_1m": 1, "metric_points_1h": 60}
+
+func rateSource(table string, intervalMinutes int) (string, int, time.Duration) {
+	if table == "metric_points_1d" {
+		table = "metric_points_1h"
+	}
+	step := rollupStepMinutes[table]
+	if intervalMinutes < step {
+		intervalMinutes = step
+	}
+	return table, intervalMinutes, shared.RateLookback + time.Duration(step)*time.Minute
+}
+
+func rateDeltasSelect(table, where string) string {
+	source := table + where
+	if table != "metric_points" {
+		source = "(SELECT recorded_at, tags, maxMerge(max_val) AS value FROM " + table + where + " GROUP BY recorded_at, tags)"
+	}
+	return "SELECT recorded_at, tags, value - lagInFrame(value) OVER w AS delta, row_number() OVER w AS rn FROM " + source +
+		" WINDOW w AS (PARTITION BY mapSort(tags) ORDER BY recorded_at ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW)"
 }
 
 func aggregationFunc(agg string, table string) string {
